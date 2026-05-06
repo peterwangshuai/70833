@@ -7,7 +7,7 @@ import folium
 from streamlit_folium import st_folium
 
 # --------------------------
-# 坐标系转换工具（WGS84 ↔ GCJ-02）
+# 坐标系转换（WGS84 ↔ GCJ-02，适配国内地图）
 # --------------------------
 def wgs84_to_gcj02(lat, lon):
     a = 6378245.0
@@ -47,51 +47,60 @@ if 'last_received' not in st.session_state:
     st.session_state.last_received = None
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-if 'is_timeout' not in st.session_state:
-    st.session_state.is_timeout = False
+if 'obstacles' not in st.session_state:
+    st.session_state.obstacles = []  # 存储障碍物坐标
 
 # --------------------------
 # 页面配置 + 双标签页
 # --------------------------
-st.set_page_config(page_title="无人机综合监控系统", layout="wide")
-st.title("🚁 无人机综合监控系统")
-tab1, tab2 = st.tabs(["🗺️ 航线规划", "📡 飞行监控"])
+st.set_page_config(page_title="无人机校园监控系统", layout="wide")
+st.title("🚁 无人机校园智能化应用Demo")
+tab1, tab2 = st.tabs(["🗺️ 航线规划（校园卫星地图）", "📡 飞行监控（心跳包）"])
 
 # --------------------------
-# 标签页1：航线规划（2D地图 + 坐标转换）
+# 标签页1：航线规划（卫星地图 + 校园坐标 + 障碍物）
 # --------------------------
 with tab1:
-    st.header("🗺️ 2D航线规划（支持缩放/拖拽）")
+    st.header("🗺️ 校园航线规划（卫星底图，可缩放/拖拽）")
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        st.subheader("📍 A/B点坐标设置")
-        a_lat = st.number_input("A点纬度(WGS84)", value=39.904200, format="%.6f")
-        a_lon = st.number_input("A点经度(WGS84)", value=116.407400, format="%.6f")
-        b_lat = st.number_input("B点纬度(WGS84)", value=31.230400, format="%.6f")
-        b_lon = st.number_input("B点经度(WGS84)", value=121.473700, format="%.6f")
+        st.subheader("📍 A/B点坐标设置（校园内）")
+        # 匹配你截图里的校园坐标（GCJ-02）
+        a_lat = st.number_input("A点纬度(GCJ-02)", value=32.2322, format="%.4f")
+        a_lon = st.number_input("A点经度(GCJ-02)", value=118.7490, format="%.4f")
+        b_lat = st.number_input("B点纬度(GCJ-02)", value=32.2343, format="%.4f")
+        b_lon = st.number_input("B点经度(GCJ-02)", value=118.7490, format="%.4f")
 
         st.divider()
-        st.subheader("🔄 坐标系转换结果")
-        a_gcj_lat, a_gcj_lon = wgs84_to_gcj02(a_lat, a_lon)
-        b_gcj_lat, b_gcj_lon = wgs84_to_gcj02(b_lat, b_lon)
-        st.info(f"A点(GCJ-02)：{a_gcj_lat}, {a_gcj_lon}")
-        st.info(f"B点(GCJ-02)：{b_gcj_lat}, {b_gcj_lon}")
+        st.subheader("🏢 障碍物设置")
+        obstacle_lat = st.number_input("障碍物纬度", value=32.2332, format="%.4f")
+        obstacle_lon = st.number_input("障碍物经度", value=118.7490, format="%.4f")
+        if st.button("添加障碍物"):
+            st.session_state.obstacles.append((obstacle_lat, obstacle_lon))
+            st.success("障碍物已添加！")
+        if st.button("清空障碍物"):
+            st.session_state.obstacles = []
+            st.info("已清空所有障碍物")
+
+        st.divider()
+        st.subheader("飞行参数")
+        flight_height = st.slider("设定飞行高度(m)", 10, 100, 50)
+        st.info(f"当前飞行高度：{flight_height}m")
 
     with col2:
-        st.subheader("🌍 二维地图视图")
+        st.subheader("🌍 校园卫星地图")
         map_placeholder = st.empty()
 
 # --------------------------
-# 标签页2：飞行监控（心跳包 + 实时图表）
+# 标签页2：飞行监控（心跳包 + 实时图表 + 超时）
 # --------------------------
 with tab2:
-    st.header("📡 心跳包实时监控")
+    st.header("📡 心跳包实时监控（每秒自发自收）")
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("▶️ 启动飞行", type="primary"):
             st.session_state.is_running = True
-            st.session_state.is_timeout = False
     with c2:
         if st.button("⏸️ 暂停飞行"):
             st.session_state.is_running = False
@@ -100,7 +109,6 @@ with tab2:
             st.session_state.df_history = pd.DataFrame(columns=["time", "seq"])
             st.session_state.last_received = None
             st.session_state.is_running = False
-            st.session_state.is_timeout = False
             st.rerun()
 
     status_box = st.empty()
@@ -119,34 +127,83 @@ with tab2:
         chart_obj = chart_placeholder.line_chart(pd.DataFrame(columns=["time", "seq"]), x="time", y="seq")
 
 # --------------------------
-# 2D地图渲染函数（Folium）
+# 卫星地图渲染函数（匹配你截图的校园效果）
 # --------------------------
-def render_folium_map(current_seq=0, total_steps=50):
+def render_satellite_map(current_seq=0, total_steps=50):
+    # 地图中心点（校园区域）
     center_lat = (a_lat + b_lat) / 2
     center_lon = (a_lon + b_lon) / 2
 
-    # 纯二维地图
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=5, tiles='OpenStreetMap')
+    # 高德卫星地图瓦片（国内稳定，校园清晰）
+    tiles = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
+    attr = "高德卫星地图"
 
-    # 无人机实时位置
+    # 创建Folium地图
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=16,  # 校园级放大，匹配截图
+        tiles=tiles,
+        attr=attr,
+        subdomains=["1", "2", "3", "4"]
+    )
+
+    # 计算无人机实时位置（沿AB线移动）
     progress = min(current_seq / total_steps, 1.0)
     drone_lat = a_lat + (b_lat - a_lat) * progress
     drone_lon = a_lon + (b_lon - a_lon) * progress
 
-    # 添加标记
-    folium.Marker([a_lat, a_lon], popup="起点 A", icon=folium.Icon(color="red")).add_to(m)
-    folium.Marker([b_lat, b_lon], popup="终点 B", icon=folium.Icon(color="green")).add_to(m)
-    folium.CircleMarker([drone_lat, drone_lon], radius=10, color="orange", fill=True, fill_color="yellow", popup="无人机").add_to(m)
-    folium.PolyLine(locations=[[a_lat, a_lon], [b_lat, b_lon]], color="blue", weight=3).add_to(m)
+    # 1. 起点A（红色标记）
+    folium.Marker(
+        [a_lat, a_lon],
+        popup="起点A",
+        icon=folium.Icon(color="red", icon="play")
+    ).add_to(m)
+
+    # 2. 终点B（绿色标记）
+    folium.Marker(
+        [b_lat, b_lon],
+        popup="终点B",
+        icon=folium.Icon(color="green", icon="flag")
+    ).add_to(m)
+
+    # 3. 无人机（黄色圆点，随心跳移动）
+    folium.CircleMarker(
+        [drone_lat, drone_lon],
+        radius=8,
+        popup=f"无人机\n进度: {progress*100:.1f}%\n高度: {flight_height}m",
+        color="orange",
+        fill=True,
+        fill_color="yellow"
+    ).add_to(m)
+
+    # 4. 飞行航线（蓝色线）
+    folium.PolyLine(
+        locations=[[a_lat, a_lon], [b_lat, b_lon]],
+        color="blue",
+        weight=3,
+        opacity=0.8
+    ).add_to(m)
+
+    # 5. 障碍物（黑色方块标记）
+    for obs_lat, obs_lon in st.session_state.obstacles:
+        folium.CircleMarker(
+            [obs_lat, obs_lon],
+            radius=12,
+            popup="障碍物",
+            color="black",
+            fill=True,
+            fill_color="black"
+        ).add_to(m)
 
     # 显示地图
     with map_placeholder:
-        st_folium(m, width=700, height=500)
+        st_folium(m, width=800, height=600)
 
 # --------------------------
 # 主程序运行
 # --------------------------
-render_folium_map(len(st.session_state.df_history))
+# 初始渲染校园卫星地图
+render_satellite_map(len(st.session_state.df_history))
 
 # 实时心跳+地图更新循环
 while st.session_state.is_running:
@@ -156,15 +213,20 @@ while st.session_state.is_running:
 
     st.session_state.df_history = pd.concat([st.session_state.df_history, new_data], ignore_index=True)
     
+    # 更新心跳折线图
     chart_obj.add_rows(new_data)
-    render_folium_map(current_seq)
+    # 更新卫星地图（无人机移动）
+    render_satellite_map(current_seq)
+    # 更新数据列表
     data_box.dataframe(st.session_state.df_history.tail(10), hide_index=True, height=300)
+    # 更新状态
     status_box.success(f"✅ 飞行正常 | 包序号：{current_seq} | 时间：{current_time}")
 
+    # 超时检测计时
     st.session_state.last_received = time.time()
     time.sleep(1)
 
-# 超时检测
+# 3秒超时报警逻辑
 if st.session_state.last_received and not st.session_state.is_running:
     elapsed = time.time() - st.session_state.last_received
     if elapsed > 3 and len(st.session_state.df_history) > 0:
