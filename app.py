@@ -5,9 +5,10 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
+from folium.plugins import Draw
 
 # --------------------------
-# 坐标系转换（WGS84 ↔ GCJ-02，适配国内地图）
+# 坐标系转换（WGS84 ↔ GCJ-02）
 # --------------------------
 def wgs84_to_gcj02(lat, lon):
     a = 6378245.0
@@ -47,61 +48,42 @@ if 'last_received' not in st.session_state:
     st.session_state.last_received = None
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-if 'obstacles' not in st.session_state:
-    st.session_state.obstacles = []  # 存储障碍物：[(纬度, 经度), ...] 全自主管理
+if 'obstacle_polygons' not in st.session_state:
+    st.session_state.obstacle_polygons = []  # 存储多边形障碍物：[[[lat, lon], [lat, lon], ...], ...]
 
 # --------------------------
-# 页面配置（项目名精准修改）
+# 页面配置
 # --------------------------
 st.set_page_config(page_title="心跳包接收系统-3D地图规划模块", layout="wide")
 st.title("🚁 心跳包接收系统-3D地图规划模块")
-# 双标签页贴合项目功能
 tab1, tab2 = st.tabs(["🗺️ 3D地图航线规划", "📡 心跳包实时监控"])
 
 # --------------------------
-# 标签页1：3D地图航线规划（核心模块）
+# 标签页1：3D地图航线规划（核心修改：地图圈选障碍物）
 # --------------------------
 with tab1:
-    st.header("🗺️ 校园航线规划（卫星底图，可缩放/拖拽/3D视角）")
+    st.header("🗺️ 校园航线规划（OpenStreetMap，可缩放/拖拽/圈选）")
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        st.subheader("📍 A/B点坐标设置（南京科技职业学院校园内）")
-        # 校园内默认坐标，A点教学楼，B点操场，中间可设置障碍物
+        # 需求1：删除括号及内容
+        st.subheader("📍 A/B点坐标设置")
         a_lat = st.number_input("A点纬度(GCJ-02)", value=32.2322, format="%.4f")
         a_lon = st.number_input("A点经度(GCJ-02)", value=118.7490, format="%.4f")
         b_lat = st.number_input("B点纬度(GCJ-02)", value=32.2343, format="%.4f")
         b_lon = st.number_input("B点经度(GCJ-02)", value=118.7490, format="%.4f")
 
         st.divider()
-        # ========== 障碍物全自主设置核心优化 ==========
-        st.subheader("🏢 障碍物自主设置")
-        obstacle_lat = st.number_input("障碍物纬度", value=32.2332, format="%.4f")
-        obstacle_lon = st.number_input("障碍物经度", value=118.7490, format="%.4f")
+        # 需求3：地图圈选障碍物说明
+        st.subheader("🏢 障碍物圈选设置")
+        st.info("💡 操作说明：在右侧地图上点击「Draw a polygon」按钮，在地图上点击圈选多边形障碍物，双击结束。圈选的障碍物会自动保存。")
         
-        # 新增障碍物按钮
-        col_add, col_clear = st.columns(2)
-        with col_add:
-            if st.button("✅ 添加障碍物", type="primary"):
-                st.session_state.obstacles.append((obstacle_lat, obstacle_lon))
-                st.success("障碍物添加成功！")
-        with col_clear:
-            if st.button("🗑️ 清空全部"):
-                st.session_state.obstacles = []
-                st.info("已清空所有障碍物")
-
-        # 已添加障碍物列表 + 单个删除（完全自主管理）
-        if st.session_state.obstacles:
-            st.caption("已添加障碍物列表")
-            for idx, (obs_lat, obs_lon) in enumerate(st.session_state.obstacles):
-                col_obs, col_del = st.columns([4, 1])
-                with col_obs:
-                    st.text(f"障碍物{idx+1}：{obs_lat}, {obs_lon}")
-                with col_del:
-                    if st.button("删除", key=f"del_{idx}"):
-                        st.session_state.obstacles.pop(idx)
-                        st.rerun()
-        # ==============================================
+        if st.button("🗑️ 清空所有障碍物"):
+            st.session_state.obstacle_polygons = []
+            st.success("已清空所有障碍物")
+        
+        if st.session_state.obstacle_polygons:
+            st.caption(f"已保存 {len(st.session_state.obstacle_polygons)} 个障碍物区域")
 
         st.divider()
         st.subheader("✈️ 飞行参数设置")
@@ -110,7 +92,8 @@ with tab1:
         st.info(f"当前飞行高度：{flight_height}m | 3D视角倾斜：{view_pitch}°")
 
     with col2:
-        st.subheader("🌍 南京科技职业学院 3D卫星地图")
+        # 需求2：删除南京科技职业学院
+        st.subheader("🌍 3D卫星地图")
         map_placeholder = st.empty()
 
 # --------------------------
@@ -148,23 +131,18 @@ with tab2:
         chart_obj = chart_placeholder.line_chart(pd.DataFrame(columns=["time", "seq"]), x="time", y="seq")
 
 # --------------------------
-# 3D卫星地图渲染函数（稳定加载+3D视角）
+# 地图渲染函数（需求4：OpenStreetMap + 圈选功能）
 # --------------------------
-def render_3d_map(current_seq=0, total_steps=50):
-    # 地图中心点：南京科技职业学院
+def render_map_with_draw(current_seq=0, total_steps=50):
     center_lat = (a_lat + b_lat) / 2
     center_lon = (a_lon + b_lon) / 2
 
-    # ArcGIS全球稳定卫星底图（无空白问题，校园清晰）
-    satellite_tiles = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-    # 创建地图，支持3D倾斜视角
+    # 需求4：使用OpenStreetMap底图
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=17,
-        tiles=satellite_tiles,
-        attr="Tiles © Esri",
-        # 3D视角核心参数
-        view_control={"pitch": view_pitch, "bearing": 0}
+        tiles="OpenStreetMap",
+        attr="OpenStreetMap"
     )
 
     # 计算无人机实时位置
@@ -172,7 +150,7 @@ def render_3d_map(current_seq=0, total_steps=50):
     drone_lat = a_lat + (b_lat - a_lat) * progress
     drone_lon = a_lon + (b_lon - a_lon) * progress
 
-    # 标记点渲染
+    # 标记点
     folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="play")).add_to(m)
     folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
     folium.CircleMarker(
@@ -181,22 +159,59 @@ def render_3d_map(current_seq=0, total_steps=50):
     ).add_to(m)
     folium.PolyLine(locations=[[a_lat, a_lon], [b_lat, b_lon]], color="blue", weight=3).add_to(m)
 
-    # 自主设置的障碍物渲染
-    for obs_lat, obs_lon in st.session_state.obstacles:
-        folium.CircleMarker(
-            [obs_lat, obs_lon], radius=12, color="black", fill=True, fill_color="black",
-            popup=f"障碍物\n坐标：{obs_lat}, {obs_lon}"
+    # 需求3：渲染已记忆的多边形障碍物
+    for poly_coords in st.session_state.obstacle_polygons:
+        # 转换坐标格式：[[lat, lon], ...] -> [[lon, lat], ...] (GeoJSON格式)
+        geo_coords = [[lon, lat] for lat, lon in poly_coords]
+        folium.Polygon(
+            locations=poly_coords,
+            color="red",
+            fill=True,
+            fill_color="red",
+            fill_opacity=0.3,
+            popup="障碍物区域"
         ).add_to(m)
 
-    # 渲染地图到页面
+    # 需求3：添加Draw插件，支持多边形圈选
+    draw = Draw(
+        export=False,
+        position='topleft',
+        draw_options={
+            'polyline': False,
+            'rectangle': False,
+            'circle': False,
+            'marker': False,
+            'circlemarker': False,
+            'polygon': {
+                'allowIntersection': False,
+                'drawError': {'color': '#ff0000', 'timeout': 2000},
+                'shapeOptions': {'color': '#ff0000', 'fillOpacity': 0.3}
+            }
+        },
+        edit_options={'edit': False, 'remove': False}
+    )
+    draw.add_to(m)
+
+    # 渲染地图并获取返回数据（用于记忆圈选）
     with map_placeholder:
-        st_folium(m, width=800, height=600, returned_objects=[])
+        output = st_folium(m, width=800, height=600, returned_objects=["last_active_drawing"])
+
+    # 需求3：记忆功能 - 保存新圈选的多边形
+    if output and output["last_active_drawing"]:
+        geometry = output["last_active_drawing"]["geometry"]
+        if geometry["type"] == "Polygon":
+            # 转换坐标格式：[[lon, lat], ...] -> [[lat, lon], ...]
+            coords = [[lat, lon] for lon, lat in geometry["coordinates"][0]]
+            # 避免重复添加
+            if coords not in st.session_state.obstacle_polygons:
+                st.session_state.obstacle_polygons.append(coords)
+                st.rerun()
 
 # --------------------------
 # 主程序运行
 # --------------------------
-# 初始渲染3D地图
-render_3d_map(len(st.session_state.df_history))
+# 初始渲染地图
+render_map_with_draw(len(st.session_state.df_history))
 
 # 实时心跳+地图更新循环
 while st.session_state.is_running:
@@ -206,10 +221,10 @@ while st.session_state.is_running:
 
     st.session_state.df_history = pd.concat([st.session_state.df_history, new_data], ignore_index=True)
     
-    # 实时更新心跳折线图
+    # 更新心跳折线图
     chart_obj.add_rows(new_data)
-    # 实时更新3D地图（无人机移动）
-    render_3d_map(current_seq)
+    # 更新地图（无人机移动）
+    render_map_with_draw(current_seq)
     # 更新数据列表
     data_box.dataframe(st.session_state.df_history.tail(10), hide_index=True, height=300)
     # 更新状态
