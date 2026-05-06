@@ -1,5 +1,6 @@
-streamlit
+   streamlit
 pandas
 numpy
 folium
 streamlit-folium
+shapely
