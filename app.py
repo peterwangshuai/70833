@@ -38,7 +38,7 @@ st.markdown('''
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v16.0 实时刷新+多障碍物版"
+VERSION = "v16.1 修复障碍物高度读取bug"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -146,14 +146,25 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 核心：多障碍物绕行算法（实时计算） ==========================
+# ========================== 核心：多障碍物绕行算法（修复高度读取bug） ==========================
 def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, safe_radius):
     routes = {"直接飞越": [start, end]}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 计算所有障碍物的最大高度
-    max_obs_height = max([obstacle_heights.get(i, 50) for i in range(len(obstacle_list))]) if obstacle_list else 0
+    # ========== 修复核心：正确读取障碍物高度 ==========
+    # 初始化最大高度为0
+    max_obs_height = 0
+    # 遍历所有障碍物，正确读取每个的高度
+    for idx in range(len(obstacle_list)):
+        # 取当前障碍物高度，默认50米
+        current_height = obstacle_heights.get(idx, 50)
+        # 更新最大高度
+        if current_height > max_obs_height:
+            max_obs_height = current_height
+    
+    # 调试：打印高度值（可删除）
+    print(f"飞行高度：{fly_height} | 障碍物最大高度：{max_obs_height}")
     
     # 飞行高度足够，直接返回
     if fly_height > max_obs_height or not obstacle_list:
@@ -334,7 +345,7 @@ if st.session_state.current_page == "航线规划":
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物 | 画完自动刷新")
             for idx in range(len(st.session_state.obstacle_polygons)):
-                with st.expander(f"障碍物 {idx+1}", expanded=False):
+                with st.expander(f"障碍物 {idx+1}", expanded=True):  # 默认展开，方便改高度
                     # 高度修改后立即刷新
                     st.session_state.obstacle_heights[idx] = st.slider(
                         "障碍物高度(米)", 1, 200,
@@ -404,17 +415,20 @@ if st.session_state.current_page == "航线规划":
         route_keys = list(st.session_state.all_routes.keys())
         
         if len(route_keys) == 1:
-            st.warning("⚠️ 仅显示直接飞越：飞行高度 ≥ 障碍物最大高度")
+            # 显示实际高度对比，方便排查
+            max_obs_h = 0
+            for idx in range(len(st.session_state.obstacle_polygons)):
+                max_obs_h = max(max_obs_h, st.session_state.obstacle_heights.get(idx, 50))
+            st.warning(f"⚠️ 仅显示直接飞越：飞行高度({st.session_state.flight_height}米) > 障碍物最大高度({max_obs_h}米)")
         
         # 安全设置默认选中项
-        if "最优航线" in route_keys[0]:
+        default_idx = 0
+        if "最优航线" in " ".join(route_keys):
             default_idx = route_keys.index([k for k in route_keys if "最优航线" in k][0])
         elif "左侧绕行" in route_keys:
             default_idx = route_keys.index("左侧绕行")
         elif "右侧绕行" in route_keys:
             default_idx = route_keys.index("右侧绕行")
-        else:
-            default_idx = 0
 
         selected_route = st.radio(
             "当前激活航线", 
@@ -541,11 +555,11 @@ if st.session_state.current_page == "航线规划":
                             # 添加新障碍物
                             st.session_state.obstacle_polygons.append(poly_coords)
                             new_id = len(st.session_state.obstacle_polygons) - 1
-                            st.session_state.obstacle_heights[new_id] = 50
+                            st.session_state.obstacle_heights[new_id] = 50  # 默认50米
                             st.session_state.obstacle_create_time[new_id] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             # 强制刷新地图
                             st.session_state.map_rerun_key += 1
-                            st.success(f"✅ 障碍物 {new_id+1} 添加成功！地图已实时刷新")
+                            st.success(f"✅ 障碍物 {new_id+1} 添加成功！默认高度50米，可修改")
                             st.rerun()
 
         # 调用地图渲染
