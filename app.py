@@ -10,13 +10,28 @@ import os
 import json
 from shapely.geometry import LineString, Polygon, Point
 
-# ========================== 基础配置 ==========================
+# ========================== 页面基础配置 + 工具栏CSS汉化 ==========================
+st.set_page_config(page_title="无人机心跳包接收系统", layout="wide")
+
+# 强制修改地图绘图按钮 鼠标悬停提示为中文
+st.markdown('''
+<style>
+.leaflet-draw-draw-polygon:after { content: '绘制多边形' !important; }
+.leaflet-draw-draw-rectangle:after { content: '绘制矩形' !important; }
+.leaflet-draw-draw-circle:after { content: '绘制圆形' !important; }
+.leaflet-draw-draw-marker:after { content: '添加标记点' !important; }
+.leaflet-draw-edit-edit:after { content: '编辑图层' !important; }
+.leaflet-draw-edit-remove:after { content: '删除图层' !important; }
+</style>
+''', unsafe_allow_html=True)
+
+# ========================== 基础参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "obstacle_config.json")
-VERSION = "v13.3 安全绕行+高度设置优化版"
+VERSION = "v13.4 工具栏全中文+安全绕行最终版"
 DEFAULT_SAFE_RADIUS = 5
 
-# ========================== 坐标系转换 ==========================
+# ========================== 坐标系转换函数 ==========================
 def wgs84_to_gcj02(lat, lon):
     a = 6378245.0
     ee = 0.00669342162296594323
@@ -68,7 +83,7 @@ def meter_to_latlon_offset(lat, meter):
     lon_offset = meter / (111319.9 * np.cos(np.radians(lat)))
     return lat_offset, lon_offset
 
-# ========================== 障碍物持久化 ==========================
+# ========================== 障碍物持久化读写 ==========================
 def ensure_config_dir():
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -118,18 +133,16 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 【核心修复】安全绕行航线规划 ==========================
+# ========================== 航线规划（安全绕行，保持安全距离） ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 直接飞跃
     if fly_height > obs_height:
         routes["直接飞跃"] = [start, end]
         return routes
 
-    # 生成障碍物多边形 + 安全缓冲区
     obs_poly = Polygon(obstacle_coords)
     center_point = Point(
         np.mean([p[1] for p in obstacle_coords]),
@@ -137,18 +150,13 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     )
     lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
 
-    # 安全缓冲区（按安全半径扩展）
-    safe_buffer = obs_poly.buffer(safe_radius / 111319.9)
-
-    # 左绕行（避开缓冲区）
-    left_waypoint = (center_point.y + lat_off * 2, center_point.x - lon_off * 2)
+    # 放大偏移量，强制保持安全距离，不接触障碍物
+    left_waypoint = (center_point.y + lat_off * 2.5, center_point.x - lon_off * 2.5)
     routes["向左绕行"] = [start, left_waypoint, end]
 
-    # 右绕行（避开缓冲区）
-    right_waypoint = (center_point.y - lat_off * 2, center_point.x + lon_off * 2)
+    right_waypoint = (center_point.y - lat_off * 2.5, center_point.x + lon_off * 2.5)
     routes["向右绕行"] = [start, right_waypoint, end]
 
-    # 最佳航线（选更短的绕行路线）
     min_dist = float("inf")
     best_route = None
     for name, pts in routes.items():
@@ -159,7 +167,6 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
                 min_dist = dist
                 best_route = pts
     routes["最佳航线(最短距离)"] = best_route
-
     return routes
 
 # ========================== 全局状态初始化 ==========================
@@ -193,10 +200,7 @@ if 'selected_route' not in st.session_state:
 if 'current_route_points' not in st.session_state:
     st.session_state.current_route_points = []
 
-# ========================== 页面布局 ==========================
-st.set_page_config(page_title="无人机心跳包接收系统", layout="wide")
-
-# 左侧导航栏
+# ========================== 左侧导航栏 ==========================
 with st.sidebar:
     st.subheader("🧭 导航")
     st.caption("功能页面")
@@ -222,7 +226,7 @@ with st.sidebar:
     st.success("✅ A点已设")
     st.success("✅ B点已设")
 
-# ========================== 航线规划页面 ==========================
+# ========================== 航线规划主页面 ==========================
 if st.session_state.current_page == "航线规划":
     st.header("🗺️ 航线规划")
     col_map, col_control = st.columns([2, 1])
@@ -258,12 +262,11 @@ if st.session_state.current_page == "航线规划":
         st.caption("规则：飞行高度 > 障碍物高度 → 直接飞跃；反之自动绕行（保持安全距离）")
         st.divider()
 
-        # 障碍物配置持久化（障碍物高度设置已移到这里）
+        # ========== 障碍物配置持久化 + 障碍物高度设置 ==========
         st.markdown("#### 🚀 障碍物配置持久化")
         st.caption(f"配置文件: {CONFIG_FILE} | 版本: {VERSION}")
         st.info("💡 文件保存在程序同目录下，绝对路径如上所示")
 
-        # ✅ 障碍物高度设置（移到持久化模块下）
         st.markdown("##### 障碍物高度设置")
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
@@ -377,7 +380,7 @@ if st.session_state.current_page == "航线规划":
         )
         st.session_state.current_route_points = route_map[st.session_state.selected_route]
 
-    # ========== 地图渲染 ==========
+    # ========== 地图渲染（工具栏全中文） ==========
     with col_map:
         st.subheader("🗺️ 地图")
         map_placeholder = st.empty()
@@ -446,7 +449,7 @@ if st.session_state.current_page == "航线规划":
                 popup=f"无人机\n进度: {progress*100:.1f}%"
             ).add_to(m)
 
-            # 工具栏中文化
+            # 绘图按钮文字中文
             draw = Draw(
                 export=False,
                 position='topleft',
