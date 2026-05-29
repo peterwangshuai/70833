@@ -98,6 +98,7 @@ def load_obstacles_from_file():
         st.session_state.obstacle_heights = new_heights
         st.session_state.obstacle_create_time = new_create_time
         st.session_state.last_drawing_id = None
+        st.rerun()
         return load_data
     except Exception as e:
         st.error(f"加载失败：{str(e)}")
@@ -178,7 +179,7 @@ if 'last_drawing_id' not in st.session_state:
 
 # 飞行参数状态
 if 'flight_height' not in st.session_state:
-    st.session_state.flight_height = 10  # 和截图一致，默认10m
+    st.session_state.flight_height = 10
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = 5
 if 'selected_route' not in st.session_state:
@@ -220,64 +221,56 @@ with st.sidebar:
 # ========================== 主区域 ==========================
 if st.session_state.current_page == "航线规划":
     st.header("🗺️ 航线规划")
-    col_map, col_control = st.columns([2, 1])  # 调整为左地图右控制面板，和截图一致
+    col_map, col_control = st.columns([2, 1])
 
-    # 左侧地图（和截图一致）
-    with col_map:
-        st.subheader("🗺️ 地图")
-        map_placeholder = st.empty()
-
-    # 右侧控制面板（和第一张截图完全一致）
+    # 右侧控制面板
     with col_control:
         st.subheader("⚙️ 控制面板")
-        # 起点A设置
+        # 起点A
         st.markdown("#### 📍 起点A")
         st.caption("输入坐标系: GCJ-02")
         col_a_lat, col_a_lon = st.columns(2)
         with col_a_lat:
-            input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat")
+            # 修改数值后自动刷新页面，地图同步更新
+            input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat", on_change=st.rerun)
         with col_a_lon:
-            input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon")
+            input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon", on_change=st.rerun)
         st.success("✅ 设置A点")
 
         st.divider()
 
-        # 终点B设置
+        # 终点B
         st.markdown("#### 📍 终点B")
         col_b_lat, col_b_lon = st.columns(2)
         with col_b_lat:
-            input_b_lat = st.number_input("纬度", value=32.2344, format="%.4f", key="b_lat")
+            input_b_lat = st.number_input("纬度", value=32.2344, format="%.4f", key="b_lat", on_change=st.rerun)
         with col_b_lon:
-            input_b_lon = st.number_input("经度", value=118.749, format="%.3f", key="b_lon")
+            input_b_lon = st.number_input("经度", value=118.749, format="%.3f", key="b_lon", on_change=st.rerun)
         st.success("✅ 设置B点")
 
         st.divider()
 
-        # 飞行参数设置（和截图一致）
+        # 飞行参数
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.slider("设定飞行高度(m)", 10, 100, 10)
-        st.caption("最大允许高度(m)")  # 和截图下方文字一致
+        st.caption("最大允许高度(m)")
 
         st.divider()
 
-        # -------------------------- 障碍物配置持久化（和第二张截图1:1还原） --------------------------
+        # 障碍物配置持久化
         st.markdown("#### 🚀 障碍物配置持久化")
         st.caption(f"配置文件: {CONFIG_FILE} | 版本: {VERSION}")
         st.info("💡 文件保存在程序同目录下，绝对路径如上所示")
 
-        # 四个核心按钮（和截图样式一致，颜色匹配）
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             if st.button("💾 保存到文件", type="primary", use_container_width=True):
-                save_data = save_obstacles_to_file()
+                save_obstacles_to_file()
                 st.success("保存成功！")
                 st.rerun()
         with col2:
             if st.button("📂 从文件加载", use_container_width=True):
-                load_data = load_obstacles_from_file()
-                if load_data:
-                    st.success("加载成功！")
-                    st.rerun()
+                load_obstacles_from_file()
         with col3:
             if st.button("🗑️ 清除全部", use_container_width=True):
                 st.session_state.obstacle_polygons = []
@@ -294,7 +287,7 @@ if st.session_state.current_page == "航线规划":
 
         st.divider()
 
-        # 下载配置文件部分（和截图一致）
+        # 下载配置文件
         st.markdown("#### ⬇️ 下载配置文件到本地")
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -308,7 +301,6 @@ if st.session_state.current_page == "航线规划":
             )
             st.caption("点击下载即可将云端保存的障碍物配置保存到你的电脑")
 
-            # 文件状态显示（浅蓝色背景，和截图一致）
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
@@ -319,24 +311,22 @@ if st.session_state.current_page == "航线规划":
         else:
             st.info("暂无配置文件，请先点击「保存到文件」生成配置")
 
-        # 显示文件路径（和截图一致）
         st.code(CONFIG_FILE, language="text")
-
         st.divider()
 
-        # 避障航线选择
-        st.markdown("#### 🧭 避障航线选择")
-        route_options = ["原航线（直接飞跃）"]
-        has_collision = False
-        all_routes = {}
-
-        # 坐标系转换（输入坐标系为GCJ-02，直接使用；如果是WGS-84则转换）
+        # ========== 实时坐标转换 & 航线计算（核心修复） ==========
         if st.session_state.input_coord_system == "WGS-84":
             a_lat, a_lon = wgs84_to_gcj02(input_a_lat, input_a_lon)
             b_lat, b_lon = wgs84_to_gcj02(input_b_lat, input_b_lon)
         else:
             a_lat, a_lon = input_a_lat, input_a_lon
             b_lat, b_lon = input_b_lat, input_b_lon
+
+        # 避障航线选择
+        st.markdown("#### 🧭 避障航线选择")
+        route_options = ["原航线（直接飞跃）"]
+        has_collision = False
+        all_routes = {}
 
         if st.session_state.obstacle_polygons:
             for idx, obs_poly in enumerate(st.session_state.obstacle_polygons):
@@ -366,122 +356,124 @@ if st.session_state.current_page == "航线规划":
         else:
             st.session_state.current_route_points = [[a_lat, a_lon], [b_lat, b_lon]]
 
-    # 地图渲染函数
-    def render_satellite_map():
-        center_lat = (a_lat + b_lat) / 2
-        center_lon = (a_lon + b_lon) / 2
+    # 左侧地图
+    with col_map:
+        st.subheader("🗺️ 地图")
+        map_placeholder = st.empty()
 
-        # 卫星底图，和截图一致
-        satellite_tiles = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=17,
-            tiles=satellite_tiles,
-            attr="Tiles © Esri"
-        )
+        # 地图渲染函数（每次都使用最新A/B坐标）
+        def render_satellite_map():
+            center_lat = (a_lat + b_lat) / 2
+            center_lon = (a_lon + b_lon) / 2
 
-        # A/B点标记（和截图一致，A红色，B绿色）
-        folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="play")).add_to(m)
-        folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
-
-        # 选中的航线
-        folium.PolyLine(
-            locations=st.session_state.current_route_points,
-            color="blue",
-            weight=4,
-            opacity=0.9,
-            popup=f"选中航线：{st.session_state.selected_route}"
-        ).add_to(m)
-
-        # 障碍物渲染
-        for idx, poly_coords in enumerate(st.session_state.obstacle_polygons):
-            obs_height = st.session_state.obstacle_heights.get(idx, 50)
-            folium.Polygon(
-                locations=poly_coords,
-                color="red",
-                fill=True,
-                fill_color="red",
-                fill_opacity=0.4,
-                weight=2,
-                popup=f"障碍物\n高度：{obs_height}m"
-            ).add_to(m)
-
-        # 无人机实时位置
-        current_seq = len(st.session_state.df_history)
-        total_steps = 50
-        progress = min(current_seq / total_steps, 1.0)
-
-        route_points = st.session_state.current_route_points
-        if len(route_points) == 2:
-            drone_lat = route_points[0][0] + (route_points[1][0] - route_points[0][0]) * progress
-            drone_lon = route_points[0][1] + (route_points[1][1] - route_points[0][1]) * progress
-        else:
-            seg1_length = np.sqrt((route_points[1][0]-route_points[0][0])**2 + (route_points[1][1]-route_points[0][1])**2)
-            seg2_length = np.sqrt((route_points[2][0]-route_points[1][0])**2 + (route_points[2][1]-route_points[1][1])**2)
-            total_length = seg1_length + seg2_length
-            if progress * total_length <= seg1_length:
-                seg_progress = (progress * total_length) / seg1_length
-                drone_lat = route_points[0][0] + (route_points[1][0] - route_points[0][0]) * seg_progress
-                drone_lon = route_points[0][1] + (route_points[1][1] - route_points[0][1]) * seg_progress
-            else:
-                seg_progress = (progress * total_length - seg1_length) / seg2_length
-                drone_lat = route_points[1][0] + (route_points[2][0] - route_points[1][0]) * seg_progress
-                drone_lon = route_points[1][1] + (route_points[2][1] - route_points[1][1]) * seg_progress
-
-        folium.CircleMarker(
-            [drone_lat, drone_lon],
-            radius=10,
-            color="orange",
-            fill=True,
-            fill_color="yellow",
-            popup=f"无人机\n进度: {progress*100:.1f}%"
-        ).add_to(m)
-
-        # 绘制工具栏（和截图完全一致）
-        draw = Draw(
-            export=False,
-            position='topleft',
-            draw_options={
-                'polyline': False,
-                'polygon': True,
-                'rectangle': True,
-                'circle': True,
-                'marker': True,
-                'circlemarker': False,
-            },
-            edit_options={'edit': True, 'remove': True}
-        )
-        draw.add_to(m)
-
-        # 渲染地图并捕获圈选数据
-        with map_placeholder:
-            map_output = st_folium(
-                m,
-                width=1000,
-                height=700,
-                returned_objects=["last_active_drawing"]
+            satellite_tiles = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=17,
+                tiles=satellite_tiles,
+                attr="Tiles © Esri"
             )
 
-        # 捕获新圈选的障碍物
-        if map_output and map_output["last_active_drawing"]:
-            drawing = map_output["last_active_drawing"]
-            drawing_id = str(drawing["geometry"]["coordinates"])
-            
-            if drawing_id != st.session_state.last_drawing_id:
-                st.session_state.last_drawing_id = drawing_id
-                geom_type = drawing["geometry"]["type"]
-                if geom_type == "Polygon":
-                    poly_coords = [[lat, lon] for lon, lat in drawing["geometry"]["coordinates"][0]]
-                    if poly_coords not in st.session_state.obstacle_polygons:
-                        st.session_state.obstacle_polygons.append(poly_coords)
-                        new_idx = len(st.session_state.obstacle_polygons) - 1
-                        st.session_state.obstacle_heights[new_idx] = 50
-                        st.session_state.obstacle_create_time[new_idx] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        st.success("障碍物圈选成功！")
-                        st.rerun()
+            # 最新A/B点位标记
+            folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="play")).add_to(m)
+            folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
 
-    # 执行地图渲染
-    render_satellite_map()
+            # 最新航线
+            folium.PolyLine(
+                locations=st.session_state.current_route_points,
+                color="blue",
+                weight=4,
+                opacity=0.9,
+                popup=f"选中航线：{st.session_state.selected_route}"
+            ).add_to(m)
+
+            # 障碍物
+            for idx, poly_coords in enumerate(st.session_state.obstacle_polygons):
+                obs_height = st.session_state.obstacle_heights.get(idx, 50)
+                folium.Polygon(
+                    locations=poly_coords,
+                    color="red",
+                    fill=True,
+                    fill_color="red",
+                    fill_opacity=0.4,
+                    weight=2,
+                    popup=f"障碍物\n高度：{obs_height}m"
+                ).add_to(m)
+
+            # 无人机位置
+            current_seq = len(st.session_state.df_history)
+            total_steps = 50
+            progress = min(current_seq / total_steps, 1.0)
+
+            route_points = st.session_state.current_route_points
+            if len(route_points) == 2:
+                drone_lat = route_points[0][0] + (route_points[1][0] - route_points[0][0]) * progress
+                drone_lon = route_points[0][1] + (route_points[1][1] - route_points[0][1]) * progress
+            else:
+                seg1_length = np.sqrt((route_points[1][0]-route_points[0][0])**2 + (route_points[1][1]-route_points[0][1])**2)
+                seg2_length = np.sqrt((route_points[2][0]-route_points[1][0])**2 + (route_points[2][1]-route_points[1][1])**2)
+                total_length = seg1_length + seg2_length
+                if progress * total_length <= seg1_length:
+                    seg_progress = (progress * total_length) / seg1_length
+                    drone_lat = route_points[0][0] + (route_points[1][0] - route_points[0][0]) * seg_progress
+                    drone_lon = route_points[0][1] + (route_points[1][1] - route_points[0][1]) * seg_progress
+                else:
+                    seg_progress = (progress * total_length - seg1_length) / seg2_length
+                    drone_lat = route_points[1][0] + (route_points[2][0] - route_points[1][0]) * seg_progress
+                    drone_lon = route_points[1][1] + (route_points[2][1] - route_points[1][1]) * seg_progress
+
+            folium.CircleMarker(
+                [drone_lat, drone_lon],
+                radius=10,
+                color="orange",
+                fill=True,
+                fill_color="yellow",
+                popup=f"无人机\n进度: {progress*100:.1f}%"
+            ).add_to(m)
+
+            # 绘制工具
+            draw = Draw(
+                export=False,
+                position='topleft',
+                draw_options={
+                    'polyline': False,
+                    'polygon': True,
+                    'rectangle': True,
+                    'circle': True,
+                    'marker': True,
+                    'circlemarker': False,
+                },
+                edit_options={'edit': True, 'remove': True}
+            )
+            draw.add_to(m)
+
+            # 渲染地图
+            with map_placeholder:
+                map_output = st_folium(
+                    m,
+                    width=1000,
+                    height=700,
+                    returned_objects=["last_active_drawing"]
+                )
+
+            # 捕获障碍物绘制
+            if map_output and map_output["last_active_drawing"]:
+                drawing = map_output["last_active_drawing"]
+                drawing_id = str(drawing["geometry"]["coordinates"])
+                if drawing_id != st.session_state.last_drawing_id:
+                    st.session_state.last_drawing_id = drawing_id
+                    geom_type = drawing["geometry"]["type"]
+                    if geom_type == "Polygon":
+                        poly_coords = [[lat, lon] for lon, lat in drawing["geometry"]["coordinates"][0]]
+                        if poly_coords not in st.session_state.obstacle_polygons:
+                            st.session_state.obstacle_polygons.append(poly_coords)
+                            new_idx = len(st.session_state.obstacle_polygons) - 1
+                            st.session_state.obstacle_heights[new_idx] = 50
+                            st.session_state.obstacle_create_time[new_idx] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            st.success("障碍物圈选成功！")
+                            st.rerun()
+
+        render_satellite_map()
 
 elif st.session_state.current_page == "飞行监控":
     st.header("📡 飞行监控（心跳包实时显示）")
@@ -533,3 +525,4 @@ elif st.session_state.current_page == "飞行监控":
             status_box.error("🚨 连接超时！超过3秒未收到心跳包！")
         else:
             status_box.warning("⏸️ 飞行已暂停")
+        
