@@ -9,13 +9,12 @@ from folium.plugins import Draw
 import os
 import json
 from shapely.geometry import LineString, Polygon, Point
-from shapely.ops import nearest_points
 
 # ========================== 基础配置 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "obstacle_config.json")
-VERSION = "v13.0 航线规划优化版"
-DEFAULT_SAFE_RADIUS = 5  # 默认安全半径5米
+VERSION = "v13.1 最终优化版"
+DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
 def wgs84_to_gcj02(lat, lon):
@@ -55,7 +54,6 @@ def transform_lon(x, y):
     ret += (150.0 * np.sin(x / 12.0 * np.pi) + 300.0 * np.sin(x / 30.0 * np.pi)) * 2.0 / 3.0
     return ret
 
-# 经纬度距离转米
 def latlon_to_meter(lat1, lon1, lat2, lon2):
     R = 6371000
     dLat = np.radians(lat2 - lat1)
@@ -65,7 +63,6 @@ def latlon_to_meter(lat1, lon1, lat2, lon2):
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
-# 米转经纬度偏移量
 def meter_to_latlon_offset(lat, meter):
     lat_offset = meter / 111319.9
     lon_offset = meter / (111319.9 * np.cos(np.radians(lat)))
@@ -122,44 +119,32 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 【核心优化】航线规划算法 ==========================
+# ========================== 航线规划算法（修复版） ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
-    """
-    航线生成主逻辑
-    :param start: (lat, lon) 起点
-    :param end: (lat, lon) 终点
-    :param obstacle_coords: 障碍物多边形坐标列表
-    :param obs_height: 障碍物高度
-    :param fly_height: 无人机飞行高度
-    :param safe_radius: 安全半径(米)
-    :return: 航线字典
-    """
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 1. 飞行高度 > 障碍物高度：直接飞跃
     if fly_height > obs_height:
         routes["直接飞跃"] = [start, end]
         return routes
 
-    # 2. 飞行高度 < 障碍物高度：必须绕行，生成 左绕行 / 右绕行 / 最佳最短航线
     obs_poly = Polygon(obstacle_coords)
-    center_point = Point(np.mean([p[0] for p in obstacle_coords]), np.mean([p[1] for p in obstacle_coords]))
-    lat_off, lon_off = meter_to_latlon_offset(center_point.x, safe_radius)
+    center_point = Point(
+        np.mean([p[1] for p in obstacle_coords]),
+        np.mean([p[0] for p in obstacle_coords])
+    )
+    lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
 
-    # -------- 左绕行（保持安全距离） --------
-    left_waypoint = (center_point.x + lat_off, center_point.lon - lon_off)
+    # 修正：Point对象的属性是.x(经度)和.y(纬度)
+    left_waypoint = (center_point.y + lat_off, center_point.x - lon_off)
     routes["向左绕行"] = [start, left_waypoint, end]
 
-    # -------- 右绕行（保持安全距离） --------
-    right_waypoint = (center_point.x - lat_off, center_point.lon + lon_off)
+    right_waypoint = (center_point.y - lat_off, center_point.x + lon_off)
     routes["向右绕行"] = [start, right_waypoint, end]
 
-    # -------- 最佳航线：全局最短路径 --------
     min_dist = float("inf")
     best_route = None
-    # 遍历左右绕行对比距离，取最短作为最佳航线
     for name, pts in routes.items():
         if name in ("向左绕行", "向右绕行"):
             dist = latlon_to_meter(pts[0][0], pts[0][1], pts[1][0], pts[1][1]) \
@@ -177,7 +162,6 @@ if 'current_page' not in st.session_state:
 if 'input_coord_system' not in st.session_state:
     st.session_state.input_coord_system = "GCJ-02(高德/百度)"
 
-# 心跳包
 if 'df_history' not in st.session_state:
     st.session_state.df_history = pd.DataFrame(columns=["time", "seq"])
 if 'last_received' not in st.session_state:
@@ -185,7 +169,6 @@ if 'last_received' not in st.session_state:
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 
-# 障碍物
 if 'obstacle_polygons' not in st.session_state:
     st.session_state.obstacle_polygons = []
 if 'obstacle_heights' not in st.session_state:
@@ -195,7 +178,6 @@ if 'obstacle_create_time' not in st.session_state:
 if 'last_drawing_id' not in st.session_state:
     st.session_state.last_drawing_id = None
 
-# 飞行参数
 if 'flight_height' not in st.session_state:
     st.session_state.flight_height = 10
 if 'safe_radius' not in st.session_state:
@@ -263,17 +245,39 @@ if st.session_state.current_page == "航线规划":
         st.success("✅ 设置B点")
         st.divider()
 
-        # 飞行高度 + 安全半径
+        # 飞行参数
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.slider("无人机飞行高度(m)", 1, 200, 10)
         st.session_state.safe_radius = st.number_input("安全半径(m)", value=DEFAULT_SAFE_RADIUS, min_value=1)
         st.caption("规则：飞行高度 > 障碍物高度 → 直接飞跃；反之自动绕行")
         st.divider()
 
-        # 障碍物配置持久化
+        # 障碍物配置持久化（新增障碍物高度设置）
         st.markdown("#### 🚀 障碍物配置持久化")
         st.caption(f"配置文件: {CONFIG_FILE} | 版本: {VERSION}")
         st.info("💡 文件保存在程序同目录下，绝对路径如上所示")
+
+        # 障碍物高度设置
+        st.markdown("##### 障碍物高度设置")
+        if st.session_state.obstacle_polygons:
+            st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
+            for idx, poly in enumerate(st.session_state.obstacle_polygons):
+                with st.expander(f"障碍物 {idx+1}", expanded=False):
+                    st.session_state.obstacle_heights[idx] = st.slider(
+                        "障碍物高度(m)", 1, 200,
+                        value=st.session_state.obstacle_heights.get(idx, 50),
+                        key=f"obs_height_{idx}"
+                    )
+                    st.caption(f"顶点数: {len(poly)}")
+                    if st.button("删除该障碍物", key=f"del_obs_{idx}"):
+                        st.session_state.obstacle_polygons.pop(idx)
+                        if idx in st.session_state.obstacle_heights:
+                            del st.session_state.obstacle_heights[idx]
+                        if idx in st.session_state.obstacle_create_time:
+                            del st.session_state.obstacle_create_time[idx]
+                        st.rerun()
+        else:
+            st.caption("暂无障碍物，请在地图上圈选")
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -324,7 +328,7 @@ if st.session_state.current_page == "航线规划":
         st.code(CONFIG_FILE, language="text")
         st.divider()
 
-        # ========== 坐标转换 & 航线自动计算 ==========
+        # 坐标转换 & 航线计算
         if st.session_state.input_coord_system == "WGS-84":
             a_lat, a_lon = wgs84_to_gcj02(input_a_lat, input_a_lon)
             b_lat, b_lon = wgs84_to_gcj02(input_b_lat, input_b_lon)
@@ -337,29 +341,24 @@ if st.session_state.current_page == "航线规划":
         fly_h = st.session_state.flight_height
         safe_r = st.session_state.safe_radius
 
-        # 航线选项
         route_options = []
         route_map = {}
         hit_obstacle = False
         current_obs_height = 0
 
         if st.session_state.obstacle_polygons:
-            # 取第一个障碍物做判断（多障碍物可自行扩展）
             obs_idx = 0
             obs_coords = st.session_state.obstacle_polygons[obs_idx]
             current_obs_height = st.session_state.obstacle_heights.get(obs_idx, 50)
             hit_obstacle = True
 
-            # 调用优化后的航线生成函数
             route_dict = generate_routes(start_pt, end_pt, obs_coords, current_obs_height, fly_h, safe_r)
             route_map = route_dict
             route_options = list(route_dict.keys())
         else:
-            # 无障碍物：仅直接飞跃
             route_options = ["直接飞跃"]
             route_map["直接飞跃"] = [start_pt, end_pt]
 
-        # 状态提示
         st.markdown("#### 🧭 航线选择")
         if not hit_obstacle:
             st.success("✅ 无障碍物，默认直接飞跃")
@@ -369,7 +368,6 @@ if st.session_state.current_page == "航线规划":
             else:
                 st.warning(f"⚠️ 飞行高度({fly_h}m) < 障碍物高度({current_obs_height}m)，启用绕行航线（安全半径{safe_r}m）")
 
-        # 航线单选
         st.session_state.selected_route = st.radio(
             "可选航线",
             options=route_options,
@@ -393,11 +391,9 @@ if st.session_state.current_page == "航线规划":
                 attr="Tiles © Esri"
             )
 
-            # A/B标记
             folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="play")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
 
-            # 当前航线
             folium.PolyLine(
                 locations=st.session_state.current_route_points,
                 color="blue",
@@ -406,7 +402,6 @@ if st.session_state.current_page == "航线规划":
                 popup=f"选中航线：{st.session_state.selected_route}"
             ).add_to(m)
 
-            # 障碍物
             for idx, poly_coords in enumerate(st.session_state.obstacle_polygons):
                 h = st.session_state.obstacle_heights.get(idx, 50)
                 folium.Polygon(
@@ -419,7 +414,6 @@ if st.session_state.current_page == "航线规划":
                     popup=f"障碍物\n高度：{h}m"
                 ).add_to(m)
 
-            # 无人机位置
             current_seq = len(st.session_state.df_history)
             total_steps = 50
             progress = min(current_seq / total_steps, 1.0)
@@ -450,19 +444,25 @@ if st.session_state.current_page == "航线规划":
                 popup=f"无人机\n进度: {progress*100:.1f}%"
             ).add_to(m)
 
-            # 绘制工具
+            # 地图工具栏改为中文
             draw = Draw(
                 export=False,
                 position='topleft',
-                draw_options={'polyline':False,'polygon':True,'rectangle':True,'circle':True,'marker':True,'circlemarker':False},
-                edit_options={'edit':True,'remove':True}
+                draw_options={
+                    'polyline': False,
+                    'polygon': {'title': '多边形', 'allowIntersection': False},
+                    'rectangle': {'title': '矩形'},
+                    'circle': {'title': '圆形'},
+                    'marker': {'title': '标记点'},
+                    'circlemarker': False
+                },
+                edit_options={'edit': True, 'remove': True}
             )
             draw.add_to(m)
 
             with map_placeholder:
                 map_out = st_folium(m, width=1000, height=700, returned_objects=["last_active_drawing"])
 
-            # 捕获绘制障碍物
             if map_out and map_out["last_active_drawing"]:
                 draw_data = map_out["last_active_drawing"]
                 draw_id = str(draw_data["geometry"]["coordinates"])
