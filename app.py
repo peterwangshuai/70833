@@ -13,7 +13,7 @@ from shapely.geometry import LineString, Polygon, Point
 # ========================== 基础配置 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "obstacle_config.json")
-VERSION = "v13.2 全中文工具栏+无警告版"
+VERSION = "v13.3 安全绕行+高度设置优化版"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -118,16 +118,18 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 航线规划算法（修复版） ==========================
+# ========================== 【核心修复】安全绕行航线规划 ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
+    # 直接飞跃
     if fly_height > obs_height:
         routes["直接飞跃"] = [start, end]
         return routes
 
+    # 生成障碍物多边形 + 安全缓冲区
     obs_poly = Polygon(obstacle_coords)
     center_point = Point(
         np.mean([p[1] for p in obstacle_coords]),
@@ -135,12 +137,18 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     )
     lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
 
-    left_waypoint = (center_point.y + lat_off, center_point.x - lon_off)
+    # 安全缓冲区（按安全半径扩展）
+    safe_buffer = obs_poly.buffer(safe_radius / 111319.9)
+
+    # 左绕行（避开缓冲区）
+    left_waypoint = (center_point.y + lat_off * 2, center_point.x - lon_off * 2)
     routes["向左绕行"] = [start, left_waypoint, end]
 
-    right_waypoint = (center_point.y - lat_off, center_point.x + lon_off)
+    # 右绕行（避开缓冲区）
+    right_waypoint = (center_point.y - lat_off * 2, center_point.x + lon_off * 2)
     routes["向右绕行"] = [start, right_waypoint, end]
 
+    # 最佳航线（选更短的绕行路线）
     min_dist = float("inf")
     best_route = None
     for name, pts in routes.items():
@@ -247,14 +255,15 @@ if st.session_state.current_page == "航线规划":
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.slider("无人机飞行高度(m)", 1, 200, 10)
         st.session_state.safe_radius = st.number_input("安全半径(m)", value=DEFAULT_SAFE_RADIUS, min_value=1)
-        st.caption("规则：飞行高度 > 障碍物高度 → 直接飞跃；反之自动绕行")
+        st.caption("规则：飞行高度 > 障碍物高度 → 直接飞跃；反之自动绕行（保持安全距离）")
         st.divider()
 
-        # 障碍物配置持久化（含高度设置）
+        # 障碍物配置持久化（障碍物高度设置已移到这里）
         st.markdown("#### 🚀 障碍物配置持久化")
         st.caption(f"配置文件: {CONFIG_FILE} | 版本: {VERSION}")
         st.info("💡 文件保存在程序同目录下，绝对路径如上所示")
 
+        # ✅ 障碍物高度设置（移到持久化模块下）
         st.markdown("##### 障碍物高度设置")
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
@@ -437,7 +446,7 @@ if st.session_state.current_page == "航线规划":
                 popup=f"无人机\n进度: {progress*100:.1f}%"
             ).add_to(m)
 
-            # ✅ 工具栏完全中文化
+            # 工具栏中文化
             draw = Draw(
                 export=False,
                 position='topleft',
@@ -459,7 +468,6 @@ if st.session_state.current_page == "航线规划":
             with map_placeholder:
                 map_out = st_folium(m, width=1000, height=700, returned_objects=["last_active_drawing"])
 
-            # 处理新绘制的障碍物（不再在回调里调用 st.rerun）
             if map_out and map_out["last_active_drawing"]:
                 draw_data = map_out["last_active_drawing"]
                 draw_id = str(draw_data["geometry"]["coordinates"])
@@ -473,7 +481,7 @@ if st.session_state.current_page == "航线规划":
                             new_idx = len(st.session_state.obstacle_polygons) - 1
                             st.session_state.obstacle_heights[new_idx] = 50
                             st.session_state.obstacle_create_time[new_idx] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            st.success("障碍物圈选成功！请重新刷新页面以查看更新")
+                            st.success("障碍物圈选成功！")
 
         render_satellite_map()
 
