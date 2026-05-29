@@ -13,139 +13,28 @@ from shapely.geometry import LineString, Polygon, Point
 # ========================== 全局配置：终极全汉化CSS ==========================
 st.set_page_config(page_title="无人机航线规划系统", layout="wide")
 
-# 强制汉化所有地图控件、隐藏原生英文提示
 st.markdown('''
 <style>
-/* 1. 隐藏所有原生英文悬浮提示 */
-.leaflet-tooltip,
-.leaflet-draw-tooltip,
-.leaflet-control-zoom-in[title],
-.leaflet-control-zoom-out[title],
-.leaflet-draw-buttons button[title] {
-    display: none !important;
-    visibility: hidden !important;
-}
-
-/* 2. 地图缩放按钮汉化 */
-.leaflet-control-zoom-in::after {
-    content: "放大地图";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-control-zoom-out::after {
-    content: "缩小地图";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-
-/* 3. 绘图工具按钮汉化 */
-.leaflet-draw-draw-polygon::after {
-    content:"绘制多边形";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-draw-draw-rectangle::after {
-    content:"绘制矩形";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-draw-draw-circle::after {
-    content:"绘制圆形";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-draw-draw-marker::after {
-    content:"添加标记点";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-draw-edit-edit::after {
-    content:"编辑图层";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-.leaflet-draw-edit-remove::after {
-    content:"删除图层";
-    position:absolute;
-    left:45px;
-    top:0;
-    background:#222;
-    color:#fff;
-    padding:3px 8px;
-    font-size:12px;
-    border-radius:3px;
-    white-space:nowrap;
-    z-index:999999;
-}
-
-/* 4. 隐藏地图右下角英文版权，替换为中文 */
-.leaflet-control-attribution { display: none !important; }
+.leaflet-tooltip,.leaflet-draw-tooltip,.leaflet-control-zoom-in[title],.leaflet-control-zoom-out[title],.leaflet-draw-buttons button[title] {display:none!important;visibility:hidden!important;}
+.leaflet-control-zoom-in::after {content:"放大地图";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-control-zoom-out::after {content:"缩小地图";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-draw-polygon::after {content:"绘制多边形";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-draw-rectangle::after {content:"绘制矩形";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-draw-circle::after {content:"绘制圆形";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-draw-marker::after {content:"添加标记点";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-edit-edit::after {content:"编辑图层";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-draw-edit-remove::after {content:"删除图层";position:absolute;left:45px;top:0;background:#222;color:#fff;padding:3px 8px;font-size:12px;border-radius:3px;white-space:nowrap;z-index:999999;}
+.leaflet-control-attribution {display:none!important;}
 </style>
 ''', unsafe_allow_html=True)
 
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v15.1 航线格式修复版"
+VERSION = "v15.2 恢复左右绕行版"
 DEFAULT_SAFE_RADIUS = 5
 
-# ========================== 坐标系转换工具函数 ==========================
+# ========================== 坐标系转换 ==========================
 def wgs84_to_gcj02(lat, lon):
     a = 6378245.0
     ee = 0.00669342162296594323
@@ -248,18 +137,13 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 【核心修复】安全绕行算法：格式兼容+绝不穿过障碍物 ==========================
+# ========================== 核心：生成左/右绕行（修复版） ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 飞行高度足够：直接飞越（格式强制为二维列表）
-    if fly_height > obs_height:
-        routes["直接飞越"] = [start, end]
-        return routes
-
-    # 1. 生成障碍物 + 安全缓冲区（单位：米转度）
+    # 无论高度如何，都先准备绕行
     obs_poly = Polygon(obstacle_coords)
     center_point = Point(
         np.mean([p[1] for p in obstacle_coords]),
@@ -268,40 +152,48 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
     safe_buffer = obs_poly.buffer(safe_radius / 111319.9)
 
-    # 2. 生成初始航点，确保不与缓冲区相交（格式强制为元组）
-    offset_scale = 2.5
-    for attempt in range(5):  # 最多尝试5次，找到不相交的航点
-        # 左侧绕行点
+    offset_scale = 3.0
+    left_ok = False
+    right_ok = False
+    left_waypoint = None
+    right_waypoint = None
+
+    for attempt in range(8):
         left_waypoint = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
-        # 右侧绕行点
         right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale)
 
-        # 生成航线并检查是否相交
         left_route = LineString([start, left_waypoint, end])
         right_route = LineString([start, right_waypoint, end])
 
         if not left_route.intersects(safe_buffer):
-            routes["左侧绕行"] = [start, left_waypoint, end]
-            break
+            left_ok = True
         if not right_route.intersects(safe_buffer):
-            routes["右侧绕行"] = [start, right_waypoint, end]
+            right_ok = True
+        if left_ok and right_ok:
             break
+        offset_scale += 1.2
 
-        # 如果相交，扩大偏移倍数
-        offset_scale += 1.0
+    if left_ok:
+        routes["左侧绕行"] = [start, left_waypoint, end]
+    if right_ok:
+        routes["右侧绕行"] = [start, right_waypoint, end]
 
-    # 3. 计算最短最优航线（强制格式兼容）
+    # 最优航线：最短的那条绕行
     min_dist = float("inf")
     best_route = None
     for name, pts in routes.items():
-        if name in ("左侧绕行", "右侧绕行"):
-            dist = latlon_to_meter(pts[0][0], pts[0][1], pts[1][0], pts[1][1]) \
-                 + latlon_to_meter(pts[1][0], pts[1][1], pts[2][0], pts[2][1])
-            if dist < min_dist:
-                min_dist = dist
-                best_route = pts
+        dist = latlon_to_meter(pts[0][0], pts[0][1], pts[1][0], pts[1][1]) \
+             + latlon_to_meter(pts[1][0], pts[1][1], pts[2][0], pts[2][1])
+        if dist < min_dist:
+            min_dist = dist
+            best_route = pts
     if best_route is not None:
-        routes["最优航线(最短距离)"] = best_route
+        routes["最优航线（最短绕行）"] = best_route
+
+    # 只有高度足够才加直接飞越
+    if fly_height > obs_height:
+        routes["直接飞越"] = [start, end]
+
     return routes
 
 # ========================== 全局状态初始化 ==========================
@@ -309,14 +201,12 @@ if 'current_page' not in st.session_state:
     st.session_state.current_page = "航线规划"
 if 'input_coord_system' not in st.session_state:
     st.session_state.input_coord_system = "GCJ-02(高德/百度)"
-
 if 'df_history' not in st.session_state:
     st.session_state.df_history = pd.DataFrame(columns=["时间", "序号"])
 if 'last_received' not in st.session_state:
     st.session_state.last_received = None
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-
 if 'obstacle_polygons' not in st.session_state:
     st.session_state.obstacle_polygons = []
 if 'obstacle_heights' not in st.session_state:
@@ -325,37 +215,23 @@ if 'obstacle_create_time' not in st.session_state:
     st.session_state.obstacle_create_time = {}
 if 'last_drawing_id' not in st.session_state:
     st.session_state.last_drawing_id = None
-
 if 'flight_height' not in st.session_state:
     st.session_state.flight_height = 10
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
-if 'selected_route' not in st.session_state:
-    st.session_state.selected_route = "直接飞越"
-# 【关键修复】强制初始化航线为有效格式
 if 'current_route_points' not in st.session_state:
     st.session_state.current_route_points = [(32.2323, 118.749), (32.2344, 118.749)]
-# 用于强制地图刷新的key
 if 'map_rerun_key' not in st.session_state:
     st.session_state.map_rerun_key = 0
 
 # ========================== 左侧导航栏 ==========================
 with st.sidebar:
     st.subheader("🧭 导航")
-    st.caption("功能页面")
-    st.session_state.current_page = st.radio(
-        "", ["航线规划", "飞行监控"],
-        index=0, label_visibility="collapsed"
-    )
+    st.session_state.current_page = st.radio("", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
     st.divider()
-
     st.subheader("⚙️ 坐标系设置")
-    st.session_state.input_coord_system = st.radio(
-        "", ["WGS-84", "GCJ-02(高德/百度)"],
-        index=1, label_visibility="collapsed"
-    )
+    st.session_state.input_coord_system = st.radio("", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
     st.divider()
-
     st.subheader("📊 系统状态")
     st.success("✅ 起点A已设置")
     st.success("✅ 终点B已设置")
@@ -365,11 +241,8 @@ if st.session_state.current_page == "航线规划":
     st.header("🗺️ 航线规划")
     col_map, col_control = st.columns([2, 1])
 
-    # 右侧控制面板
     with col_control:
         st.subheader("⚙️ 控制面板")
-
-        # 起点终点设置
         st.markdown("#### 📍 起点A")
         input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f")
         input_a_lon = st.number_input("经度", value=118.749, format="%.3f")
@@ -382,16 +255,13 @@ if st.session_state.current_page == "航线规划":
         st.success("✅ 已设置终点B")
         st.divider()
 
-        # 飞行参数
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.slider("无人机飞行高度(米)", 1, 200, 10)
         st.session_state.safe_radius = st.number_input("安全距离(米)", value=5, min_value=1)
-        st.caption("高度>障碍物高度=直接飞越，反之自动绕行避障")
+        st.caption("提示：飞行高度 ≤ 障碍物高度 才会显示左右绕行")
         st.divider()
 
-        # 障碍物配置持久化 + 高度设置（实时更新）
-        st.markdown("#### 🚀 障碍物配置持久化")
-        st.markdown("##### 障碍物高度设置")
+        st.markdown("#### 🚀 障碍物配置")
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
             for idx in range(len(st.session_state.obstacle_polygons)):
@@ -412,7 +282,6 @@ if st.session_state.current_page == "航线规划":
         else:
             st.info("暂无障碍物，请在地图上圈选区域")
 
-        # 功能按钮
         c1,c2,c3,c4 = st.columns(4)
         with c1:
             if st.button("💾 保存", type="primary", use_container_width=True):
@@ -435,7 +304,7 @@ if st.session_state.current_page == "航线规划":
                 st.success("部署完成")
         st.divider()
 
-        # 航线逻辑计算（强制格式兼容）
+        # 航线计算
         if st.session_state.input_coord_system == "WGS-84":
             a_lat,a_lon = wgs84_to_gcj02(input_a_lat,input_a_lon)
             b_lat,b_lon = wgs84_to_gcj02(input_b_lat,input_b_lon)
@@ -447,25 +316,28 @@ if st.session_state.current_page == "航线规划":
         end_pt = (b_lat,b_lon)
 
         route_map = {}
-        # 【关键修复】始终保留直接飞越选项，确保无None值
-        route_map["直接飞越"] = [start_pt, end_pt]
         if st.session_state.obstacle_polygons:
             obs_idx = 0
             obs_h = st.session_state.obstacle_heights.get(0,50)
-            obstacle_routes = generate_routes(start_pt,end_pt,
+            route_map = generate_routes(
+                start_pt, end_pt,
                 st.session_state.obstacle_polygons[0],
                 obs_h,
                 st.session_state.flight_height,
-                st.session_state.safe_radius)
-            # 合并绕行航线，覆盖同名选项（如果有）
-            route_map.update(obstacle_routes)
+                st.session_state.safe_radius
+            )
+        else:
+            route_map["直接飞越"] = [start_pt, end_pt]
 
         st.markdown("#### 🧭 航线选择")
-        selected_route = st.radio("可选航线", list(route_map.keys()))
-        # 【关键修复】强制赋值有效航线，防止None
+        if len(route_map) == 1 and "直接飞越" in route_map:
+            st.warning("⚠️ 无绕行选项：飞行高度 ≥ 障碍物高度，可直接飞越")
+        # 默认选中最优航线，没有就选第一个
+        default_key = "最优航线（最短绕行）" if "最优航线（最短绕行）" in route_map else list(route_map.keys())[0]
+        selected_route = st.radio("可选航线", list(route_map.keys()), index=list(route_map.keys()).index(default_key))
         st.session_state.current_route_points = route_map[selected_route]
 
-    # 地图渲染区域（带强制刷新key，实时更新）
+    # 地图渲染
     with col_map:
         st.subheader("🗺️ 地图")
         map_placeholder = st.empty()
@@ -474,7 +346,6 @@ if st.session_state.current_page == "航线规划":
             center_lat = (a_lat + b_lat) / 2
             center_lon = (a_lon + b_lon) / 2
 
-            # 卫星地图，中文属性
             m = folium.Map(
                 [center_lat, center_lon],
                 zoom_start=17,
@@ -482,10 +353,9 @@ if st.session_state.current_page == "航线规划":
                 attr="卫星地图来源：Esri"
             )
 
-            # 标记、航线、障碍物（中文弹窗）
             folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green")).add_to(m)
-            # 【关键修复】强制航线格式兼容
+
             if st.session_state.current_route_points and len(st.session_state.current_route_points) >= 2:
                 folium.PolyLine(
                     st.session_state.current_route_points,
@@ -504,7 +374,6 @@ if st.session_state.current_page == "航线规划":
                     popup=f"障碍物 | 高度：{st.session_state.obstacle_heights.get(idx, 50)}米"
                 ).add_to(m)
 
-            # 绘图组件（无多余英文配置）
             draw = Draw(
                 export=False,
                 position="topleft",
@@ -513,7 +382,6 @@ if st.session_state.current_page == "航线规划":
             )
             draw.add_to(m)
 
-            # 带动态key，强制每次状态变化时重绘
             with map_placeholder:
                 map_data = st_folium(
                     m,
@@ -523,7 +391,6 @@ if st.session_state.current_page == "航线规划":
                     key=f"map_{st.session_state.map_rerun_key}"
                 )
 
-            # 处理圈选的障碍物（实时更新+刷新）
             if map_data and map_data.get("last_active_drawing"):
                 draw_id = str(map_data["last_active_drawing"]["geometry"]["coordinates"])
                 if draw_id != st.session_state.last_drawing_id:
