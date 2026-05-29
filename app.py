@@ -13,7 +13,7 @@ from shapely.geometry import LineString, Polygon, Point
 # ========================== 基础配置 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "obstacle_config.json")
-VERSION = "v13.1 最终优化版"
+VERSION = "v13.2 全中文工具栏+无警告版"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -113,7 +113,6 @@ def load_obstacles_from_file():
         st.session_state.obstacle_heights = new_heights
         st.session_state.obstacle_create_time = new_create_time
         st.session_state.last_drawing_id = None
-        st.rerun()
         return load_data
     except Exception as e:
         st.error(f"加载失败：{str(e)}")
@@ -136,7 +135,6 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     )
     lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
 
-    # 修正：Point对象的属性是.x(经度)和.y(纬度)
     left_waypoint = (center_point.y + lat_off, center_point.x - lon_off)
     routes["向左绕行"] = [start, left_waypoint, end]
 
@@ -229,9 +227,9 @@ if st.session_state.current_page == "航线规划":
         st.caption("输入坐标系: GCJ-02")
         col_a_lat, col_a_lon = st.columns(2)
         with col_a_lat:
-            input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat", on_change=st.rerun)
+            input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat")
         with col_a_lon:
-            input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon", on_change=st.rerun)
+            input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon")
         st.success("✅ 设置A点")
         st.divider()
 
@@ -239,9 +237,9 @@ if st.session_state.current_page == "航线规划":
         st.markdown("#### 📍 终点B")
         col_b_lat, col_b_lon = st.columns(2)
         with col_b_lat:
-            input_b_lat = st.number_input("纬度", value=32.2344, format="%.4f", key="b_lat", on_change=st.rerun)
+            input_b_lat = st.number_input("纬度", value=32.2344, format="%.4f", key="b_lat")
         with col_b_lon:
-            input_b_lon = st.number_input("经度", value=118.749, format="%.3f", key="b_lon", on_change=st.rerun)
+            input_b_lon = st.number_input("经度", value=118.749, format="%.3f", key="b_lon")
         st.success("✅ 设置B点")
         st.divider()
 
@@ -252,12 +250,11 @@ if st.session_state.current_page == "航线规划":
         st.caption("规则：飞行高度 > 障碍物高度 → 直接飞跃；反之自动绕行")
         st.divider()
 
-        # 障碍物配置持久化（新增障碍物高度设置）
+        # 障碍物配置持久化（含高度设置）
         st.markdown("#### 🚀 障碍物配置持久化")
         st.caption(f"配置文件: {CONFIG_FILE} | 版本: {VERSION}")
         st.info("💡 文件保存在程序同目录下，绝对路径如上所示")
 
-        # 障碍物高度设置
         st.markdown("##### 障碍物高度设置")
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
@@ -284,10 +281,10 @@ if st.session_state.current_page == "航线规划":
             if st.button("💾 保存到文件", type="primary", use_container_width=True):
                 save_obstacles_to_file()
                 st.success("保存成功！")
-                st.rerun()
         with col2:
             if st.button("📂 从文件加载", use_container_width=True):
-                load_obstacles_from_file()
+                if load_obstacles_from_file():
+                    st.success("加载成功！")
         with col3:
             if st.button("🗑️ 清除全部", use_container_width=True):
                 st.session_state.obstacle_polygons = []
@@ -295,12 +292,9 @@ if st.session_state.current_page == "航线规划":
                 st.session_state.obstacle_create_time = {}
                 st.session_state.last_drawing_id = None
                 st.success("已清除全部障碍物")
-                st.rerun()
         with col4:
             if st.button("🚀 一键部署", type="primary", use_container_width=True):
                 st.success("✅ 障碍物配置已一键部署！")
-                time.sleep(0.8)
-                st.rerun()
         st.divider()
 
         # 下载配置文件
@@ -319,7 +313,6 @@ if st.session_state.current_page == "航线规划":
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
-                file_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(CONFIG_FILE)).strftime("%Y-%m-%d %H:%M:%S")
                 st.info(f"📂 文件状态: 共 {config_data['obstacle_count']} 个障碍物 | 保存时间: {config_data['save_time']} | 版本: {config_data['version']}")
             except:
                 st.info("📂 文件状态: 配置文件解析失败")
@@ -444,25 +437,29 @@ if st.session_state.current_page == "航线规划":
                 popup=f"无人机\n进度: {progress*100:.1f}%"
             ).add_to(m)
 
-            # 地图工具栏改为中文
+            # ✅ 工具栏完全中文化
             draw = Draw(
                 export=False,
                 position='topleft',
                 draw_options={
                     'polyline': False,
-                    'polygon': {'title': '多边形', 'allowIntersection': False},
-                    'rectangle': {'title': '矩形'},
-                    'circle': {'title': '圆形'},
-                    'marker': {'title': '标记点'},
+                    'polygon': {'title': '绘制多边形', 'allowIntersection': False},
+                    'rectangle': {'title': '绘制矩形'},
+                    'circle': {'title': '绘制圆形'},
+                    'marker': {'title': '添加标记点'},
                     'circlemarker': False
                 },
-                edit_options={'edit': True, 'remove': True}
+                edit_options={
+                    'edit': {'title': '编辑图层'},
+                    'remove': {'title': '删除图层'}
+                }
             )
             draw.add_to(m)
 
             with map_placeholder:
                 map_out = st_folium(m, width=1000, height=700, returned_objects=["last_active_drawing"])
 
+            # 处理新绘制的障碍物（不再在回调里调用 st.rerun）
             if map_out and map_out["last_active_drawing"]:
                 draw_data = map_out["last_active_drawing"]
                 draw_id = str(draw_data["geometry"]["coordinates"])
@@ -476,8 +473,7 @@ if st.session_state.current_page == "航线规划":
                             new_idx = len(st.session_state.obstacle_polygons) - 1
                             st.session_state.obstacle_heights[new_idx] = 50
                             st.session_state.obstacle_create_time[new_idx] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            st.success("障碍物圈选成功！")
-                            st.rerun()
+                            st.success("障碍物圈选成功！请重新刷新页面以查看更新")
 
         render_satellite_map()
 
