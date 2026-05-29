@@ -31,7 +31,7 @@ st.markdown('''
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v15.2 恢复左右绕行版"
+VERSION = "v15.3 索引错误修复版"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -137,13 +137,20 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 核心：生成左/右绕行（修复版） ==========================
+# ========================== 核心：安全绕行算法（永不返回空） ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 无论高度如何，都先准备绕行
+    # 强制保留直接飞越作为保底选项
+    routes["直接飞越"] = [start, end]
+
+    # 飞行高度足够，直接返回
+    if fly_height > obs_height:
+        return routes
+
+    # 高度不足，生成绕行航线
     obs_poly = Polygon(obstacle_coords)
     center_point = Point(
         np.mean([p[1] for p in obstacle_coords]),
@@ -158,7 +165,8 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     left_waypoint = None
     right_waypoint = None
 
-    for attempt in range(8):
+    # 最多尝试10次，确保能找到不相交的航点
+    for attempt in range(10):
         left_waypoint = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
         right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale)
 
@@ -171,28 +179,25 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
             right_ok = True
         if left_ok and right_ok:
             break
-        offset_scale += 1.2
+        offset_scale += 1.5
 
     if left_ok:
         routes["左侧绕行"] = [start, left_waypoint, end]
     if right_ok:
         routes["右侧绕行"] = [start, right_waypoint, end]
 
-    # 最优航线：最短的那条绕行
+    # 计算最优航线
     min_dist = float("inf")
     best_route = None
     for name, pts in routes.items():
-        dist = latlon_to_meter(pts[0][0], pts[0][1], pts[1][0], pts[1][1]) \
-             + latlon_to_meter(pts[1][0], pts[1][1], pts[2][0], pts[2][1])
-        if dist < min_dist:
-            min_dist = dist
-            best_route = pts
+        if name in ("左侧绕行", "右侧绕行"):
+            dist = latlon_to_meter(pts[0][0], pts[0][1], pts[1][0], pts[1][1]) \
+                 + latlon_to_meter(pts[1][0], pts[1][1], pts[2][0], pts[2][1])
+            if dist < min_dist:
+                min_dist = dist
+                best_route = pts
     if best_route is not None:
         routes["最优航线（最短绕行）"] = best_route
-
-    # 只有高度足够才加直接飞越
-    if fly_height > obs_height:
-        routes["直接飞越"] = [start, end]
 
     return routes
 
@@ -304,7 +309,7 @@ if st.session_state.current_page == "航线规划":
                 st.success("部署完成")
         st.divider()
 
-        # 航线计算
+        # 航线计算（永不空值）
         if st.session_state.input_coord_system == "WGS-84":
             a_lat,a_lon = wgs84_to_gcj02(input_a_lat,input_a_lon)
             b_lat,b_lon = wgs84_to_gcj02(input_b_lat,input_b_lon)
@@ -316,25 +321,37 @@ if st.session_state.current_page == "航线规划":
         end_pt = (b_lat,b_lon)
 
         route_map = {}
+        # 强制初始化直接飞越
+        route_map["直接飞越"] = [start_pt, end_pt]
         if st.session_state.obstacle_polygons:
             obs_idx = 0
             obs_h = st.session_state.obstacle_heights.get(0,50)
-            route_map = generate_routes(
+            obstacle_routes = generate_routes(
                 start_pt, end_pt,
                 st.session_state.obstacle_polygons[0],
                 obs_h,
                 st.session_state.flight_height,
                 st.session_state.safe_radius
             )
-        else:
-            route_map["直接飞越"] = [start_pt, end_pt]
+            # 合并航线，覆盖直接飞越（如果有绕行）
+            route_map.update(obstacle_routes)
 
         st.markdown("#### 🧭 航线选择")
-        if len(route_map) == 1 and "直接飞越" in route_map:
-            st.warning("⚠️ 无绕行选项：飞行高度 ≥ 障碍物高度，可直接飞越")
-        # 默认选中最优航线，没有就选第一个
-        default_key = "最优航线（最短绕行）" if "最优航线（最短绕行）" in route_map else list(route_map.keys())[0]
-        selected_route = st.radio("可选航线", list(route_map.keys()), index=list(route_map.keys()).index(default_key))
+        if len(route_map) == 1:
+            st.warning("⚠️ 仅显示直接飞越：飞行高度 ≥ 障碍物高度 或 无法生成安全绕行")
+        
+        # 安全获取默认选项，永远不会越界
+        route_keys = list(route_map.keys())
+        if "最优航线（最短绕行）" in route_keys:
+            default_index = route_keys.index("最优航线（最短绕行）")
+        elif "左侧绕行" in route_keys:
+            default_index = route_keys.index("左侧绕行")
+        elif "右侧绕行" in route_keys:
+            default_index = route_keys.index("右侧绕行")
+        else:
+            default_index = 0
+
+        selected_route = st.radio("可选航线", route_keys, index=default_index)
         st.session_state.current_route_points = route_map[selected_route]
 
     # 地图渲染
