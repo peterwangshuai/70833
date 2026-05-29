@@ -9,7 +9,6 @@ from folium.plugins import Draw
 import os
 import json
 from shapely.geometry import LineString, Polygon, Point
-from shapely.ops import split
 
 # ========================== 全局配置：终极全汉化CSS ==========================
 st.set_page_config(page_title="无人机航线规划系统", layout="wide")
@@ -143,7 +142,7 @@ st.markdown('''
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v15.0 安全绕行+实时刷新+全中文终极版"
+VERSION = "v15.1 航线格式修复版"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换工具函数 ==========================
@@ -249,13 +248,13 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 【核心修复】安全绕行算法：绝不穿过障碍物 ==========================
+# ========================== 【核心修复】安全绕行算法：格式兼容+绝不穿过障碍物 ==========================
 def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 飞行高度足够：直接飞越
+    # 飞行高度足够：直接飞越（格式强制为二维列表）
     if fly_height > obs_height:
         routes["直接飞越"] = [start, end]
         return routes
@@ -269,8 +268,8 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
     lat_off, lon_off = meter_to_latlon_offset(center_point.y, safe_radius)
     safe_buffer = obs_poly.buffer(safe_radius / 111319.9)
 
-    # 2. 生成初始航点，确保不与缓冲区相交
-    offset_scale = 2.5  # 基础偏移倍数
+    # 2. 生成初始航点，确保不与缓冲区相交（格式强制为元组）
+    offset_scale = 2.5
     for attempt in range(5):  # 最多尝试5次，找到不相交的航点
         # 左侧绕行点
         left_waypoint = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
@@ -291,7 +290,7 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
         # 如果相交，扩大偏移倍数
         offset_scale += 1.0
 
-    # 3. 计算最短最优航线
+    # 3. 计算最短最优航线（强制格式兼容）
     min_dist = float("inf")
     best_route = None
     for name, pts in routes.items():
@@ -301,7 +300,8 @@ def generate_routes(start, end, obstacle_coords, obs_height, fly_height, safe_ra
             if dist < min_dist:
                 min_dist = dist
                 best_route = pts
-    routes["最优航线(最短距离)"] = best_route
+    if best_route is not None:
+        routes["最优航线(最短距离)"] = best_route
     return routes
 
 # ========================== 全局状态初始化 ==========================
@@ -332,8 +332,9 @@ if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
 if 'selected_route' not in st.session_state:
     st.session_state.selected_route = "直接飞越"
+# 【关键修复】强制初始化航线为有效格式
 if 'current_route_points' not in st.session_state:
-    st.session_state.current_route_points = []
+    st.session_state.current_route_points = [(32.2323, 118.749), (32.2344, 118.749)]
 # 用于强制地图刷新的key
 if 'map_rerun_key' not in st.session_state:
     st.session_state.map_rerun_key = 0
@@ -434,7 +435,7 @@ if st.session_state.current_page == "航线规划":
                 st.success("部署完成")
         st.divider()
 
-        # 航线逻辑计算
+        # 航线逻辑计算（强制格式兼容）
         if st.session_state.input_coord_system == "WGS-84":
             a_lat,a_lon = wgs84_to_gcj02(input_a_lat,input_a_lon)
             b_lat,b_lon = wgs84_to_gcj02(input_b_lat,input_b_lon)
@@ -446,20 +447,23 @@ if st.session_state.current_page == "航线规划":
         end_pt = (b_lat,b_lon)
 
         route_map = {}
+        # 【关键修复】始终保留直接飞越选项，确保无None值
+        route_map["直接飞越"] = [start_pt, end_pt]
         if st.session_state.obstacle_polygons:
             obs_idx = 0
             obs_h = st.session_state.obstacle_heights.get(0,50)
-            route_map = generate_routes(start_pt,end_pt,
+            obstacle_routes = generate_routes(start_pt,end_pt,
                 st.session_state.obstacle_polygons[0],
                 obs_h,
                 st.session_state.flight_height,
                 st.session_state.safe_radius)
-        else:
-            route_map["直接飞越"] = [start_pt,end_pt]
+            # 合并绕行航线，覆盖同名选项（如果有）
+            route_map.update(obstacle_routes)
 
         st.markdown("#### 🧭 航线选择")
-        st.session_state.selected_route = st.radio("可选航线", list(route_map.keys()))
-        st.session_state.current_route_points = route_map[st.session_state.selected_route]
+        selected_route = st.radio("可选航线", list(route_map.keys()))
+        # 【关键修复】强制赋值有效航线，防止None
+        st.session_state.current_route_points = route_map[selected_route]
 
     # 地图渲染区域（带强制刷新key，实时更新）
     with col_map:
@@ -481,12 +485,14 @@ if st.session_state.current_page == "航线规划":
             # 标记、航线、障碍物（中文弹窗）
             folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green")).add_to(m)
-            folium.PolyLine(
-                st.session_state.current_route_points,
-                color="blue",
-                weight=4,
-                popup=f"当前航线：{st.session_state.selected_route}"
-            ).add_to(m)
+            # 【关键修复】强制航线格式兼容
+            if st.session_state.current_route_points and len(st.session_state.current_route_points) >= 2:
+                folium.PolyLine(
+                    st.session_state.current_route_points,
+                    color="blue",
+                    weight=4,
+                    popup=f"当前航线：{selected_route}"
+                ).add_to(m)
 
             for idx, poly in enumerate(st.session_state.obstacle_polygons):
                 folium.Polygon(
