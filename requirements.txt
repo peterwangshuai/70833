@@ -1,6 +1,6 @@
    streamlit
 pandas
 numpy
-folium
+pip install folium==0.14.0
 streamlit-folium
 shapely
