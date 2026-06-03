@@ -146,7 +146,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 二阶贝塞尔平滑函数
+    # 二阶贝塞尔平滑，微调曲率贴合图纸
     def smooth_curve(p0, pm, p1, seg_num=22):
         curve_pts = []
         for t in np.linspace(0, 1, seg_num):
@@ -155,22 +155,19 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
             curve_pts.append((lat, lon))
         return curve_pts
 
-    # 直接飞越平滑弧线
+    # 直飞平滑参考线
     mid_point = ((start[0]+end[0])/2, (start[1]+end[1])/2)
     routes["直接飞越"] = smooth_curve(start, mid_point, end, seg_num=12)
 
-    # 统计障碍物最大高度
     max_obs_height = 0
     for idx in range(len(obstacle_list)):
         current_height = obstacle_heights.get(idx, 50)
         if current_height > max_obs_height:
             max_obs_height = current_height
 
-    # 飞行高度大于障碍物只保留直飞
     if fly_height > max_obs_height or not obstacle_list:
         return routes
 
-    # 障碍物合并
     all_polygons = []
     for obs_coords in obstacle_list:
         all_polygons.append(Polygon(obs_coords))
@@ -182,20 +179,20 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     lat_off, lon_off = meter_to_latlon_offset(center_lat, safe_radius)
     safe_buffer = merged_obs.buffer(safe_radius / 111319.9)
 
-    # 图纸定制：锚点大幅外扩，左绕西侧空地、右绕东侧马路
-    offset_scale = 9.2
+    # 关键：偏移参数精准对齐图纸蓝线弯曲幅度
+    offset_scale = 7.8
     left_ok = False
     right_ok = False
     left_waypoint = None
     right_waypoint = None
     max_try = 28
-    step_add = 3.5
+    step_add = 2.2
 
     for attempt in range(max_try):
-        # 左侧：建筑群西侧空旷区域（匹配示例蓝线左绕）
-        left_waypoint = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
-        # 右侧：建筑群东侧马路
-        right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale)
+        # 左控制点往西偏、往北拉，弧线外扩弧度=图纸蓝虚线
+        left_waypoint = (center_point.y + lat_off * offset_scale * 1.15, center_point.x - lon_off * offset_scale * 1.3)
+        # 右控制点往东偏
+        right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale * 1.2)
         left_line = LineString([start, left_waypoint, end])
         right_line = LineString([start, right_waypoint, end])
 
@@ -207,13 +204,12 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
             break
         offset_scale += step_add
 
-    # 生成平滑绕行曲线
     if left_ok:
         routes["左侧绕行"] = smooth_curve(start, left_waypoint, end, seg_num=22)
     if right_ok:
         routes["右侧绕行"] = smooth_curve(start, right_waypoint, end, seg_num=22)
 
-    # 最优航线筛选（自动选最短，优先匹配示例蓝色虚线走线）
+    # 优选最短（左侧=图纸蓝线，自动最优蓝色）
     min_dist = float("inf")
     best_route = None
     best_name = ""
@@ -230,7 +226,6 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         routes[f"最优航线（{best_name}）"] = best_route
 
     return routes
-
 # ========================== 全局状态初始化 ==========================
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "航线规划"
