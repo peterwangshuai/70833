@@ -146,84 +146,90 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 二阶贝塞尔平滑，微调曲率贴合图纸
-    def smooth_curve(p0, pm, p1, seg_num=22):
-        curve_pts = []
-        for t in np.linspace(0, 1, seg_num):
+    # 贝塞尔函数只用来做前段转弯弧线
+    def bezier_arc(p0, pm, p1, seg=12):
+        pts = []
+        for t in np.linspace(0, 0.55, seg):
             lat = (1-t)**2 * p0[0] + 2*(1-t)*t * pm[0] + t**2 * p1[0]
             lon = (1-t)**2 * p0[1] + 2*(1-t)*t * pm[1] + t**2 * p1[1]
-            curve_pts.append((lat, lon))
-        return curve_pts
+            pts.append((lat, lon))
+        return pts
 
-    # 直飞平滑参考线
-    mid_point = ((start[0]+end[0])/2, (start[1]+end[1])/2)
-    routes["直接飞越"] = smooth_curve(start, mid_point, end, seg_num=12)
+    # 直飞整条小弧线不变
+    mid = ((start[0]+end[0])/2, (start[1]+end[1])/2)
+    def full_smooth(p0,pm,p1,n=12):
+        arr=[]
+        for t in np.linspace(0,1,n):
+            la=(1-t)**2*p0[0]+2*(1-t)*t*pm[0]+t**2*p1[0]
+            lo=(1-t)**2*p0[1]+2*(1-t)*t*pm[1]+t**2*p1[1]
+            arr.append((la,lo))
+        return arr
+    routes["直接飞越"] = full_smooth(start,mid,end,12)
 
+    # 障碍物高度判断
     max_obs_height = 0
     for idx in range(len(obstacle_list)):
-        current_height = obstacle_heights.get(idx, 50)
-        if current_height > max_obs_height:
-            max_obs_height = current_height
-
-    if fly_height > max_obs_height or not obstacle_list:
+        h = obstacle_heights.get(idx,50)
+        if h>max_obs_height:
+            max_obs_height=h
+    if fly_height>max_obs_height or not obstacle_list:
         return routes
 
-    all_polygons = []
-    for obs_coords in obstacle_list:
-        all_polygons.append(Polygon(obs_coords))
-    merged_obs = unary_union(all_polygons)
-    center_lat = np.mean([p[0] for obs in obstacle_list for p in obs])
-    center_lon = np.mean([p[1] for obs in obstacle_list for p in obs])
-    center_point = Point(center_lon, center_lat)
+    # 合并障碍物
+    all_poly = []
+    for co in obstacle_list:
+        all_poly.append(Polygon(co))
+    merged = unary_union(all_poly)
+    clat = np.mean([p[0] for o in obstacle_list for p in o])
+    clon = np.mean([p[1] for o in obstacle_list for p in o])
+    cpoint = Point(clon,clat)
+    lat_off,lon_off = meter_to_latlon_offset(clat,safe_radius)
+    buf = merged.buffer(safe_radius/111319.9)
 
-    lat_off, lon_off = meter_to_latlon_offset(center_lat, safe_radius)
-    safe_buffer = merged_obs.buffer(safe_radius / 111319.9)
+    # 绕行锚点参数（匹配图纸左绕西侧空地）
+    offset_scale =7.8
+    left_ok=False
+    right_ok=False
+    lp=None
+    rp=None
+    maxtry=28
+    add=2.2
+    for _ in range(maxtry):
+        lp=(cpoint.y+lat_off*offset_scale*1.15, cpoint.x-lon_off*offset_scale*1.3)
+        rp=(cpoint.y-lat_off*offset_scale, cpoint.x+lon_off*offset_scale*1.2)
+        lline=LineString([start,lp,end])
+        rline=LineString([start,rp,end])
+        if not lline.intersects(buf):left_ok=True
+        if not rline.intersects(buf):right_ok=True
+        if left_ok and right_ok:break
+        offset_scale+=add
 
-    # 关键：偏移参数精准对齐图纸蓝线弯曲幅度
-    offset_scale = 7.8
-    left_ok = False
-    right_ok = False
-    left_waypoint = None
-    right_waypoint = None
-    max_try = 28
-    step_add = 2.2
-
-    for attempt in range(max_try):
-        # 左控制点往西偏、往北拉，弧线外扩弧度=图纸蓝虚线
-        left_waypoint = (center_point.y + lat_off * offset_scale * 1.15, center_point.x - lon_off * offset_scale * 1.3)
-        # 右控制点往东偏
-        right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale * 1.2)
-        left_line = LineString([start, left_waypoint, end])
-        right_line = LineString([start, right_waypoint, end])
-
-        if not left_line.intersects(safe_buffer):
-            left_ok = True
-        if not right_line.intersects(safe_buffer):
-            right_ok = True
-        if left_ok and right_ok:
-            break
-        offset_scale += step_add
+    # 绕行构造：起点→平滑弧线到拐点 → 拐点直线直达终点（前弯后直、无尖角）
+    def make_route(p_start,p_mid,p_end):
+        arc_part = bezier_arc(p_start,p_mid,p_end,14)
+        arc_part.append(p_end)
+        return arc_part
 
     if left_ok:
-        routes["左侧绕行"] = smooth_curve(start, left_waypoint, end, seg_num=22)
+        routes["左侧绕行"]=make_route(start,lp,end)
     if right_ok:
-        routes["右侧绕行"] = smooth_curve(start, right_waypoint, end, seg_num=22)
+        routes["右侧绕行"]=make_route(start,rp,end)
 
-    # 优选最短（左侧=图纸蓝线，自动最优蓝色）
-    min_dist = float("inf")
-    best_route = None
-    best_name = ""
-    for name, pts in routes.items():
-        if name in ("左侧绕行", "右侧绕行"):
-            dist = 0
+    # 最优航线选最短
+    min_d=float("inf")
+    best_r=None
+    best_n=""
+    for name,pts in routes.items():
+        if name in ("左侧绕行","右侧绕行"):
+            d=0
             for i in range(len(pts)-1):
-                dist += latlon_to_meter(pts[i][0],pts[i][1],pts[i+1][0],pts[i+1][1])
-            if dist < min_dist:
-                min_dist = dist
-                best_route = pts
-                best_name = name
-    if best_route is not None:
-        routes[f"最优航线（{best_name}）"] = best_route
+                d+=latlon_to_meter(pts[i][0],pts[i][1],pts[i+1][0],pts[i+1][1])
+            if d<min_d:
+                min_d=d
+                best_r=pts
+                best_n=name
+    if best_r is not None:
+        routes[f"最优航线（{best_n}）"]=best_r
 
     return routes
 # ========================== 全局状态初始化 ==========================
