@@ -146,26 +146,25 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 起点局部贝塞尔拐弯
-    def start_arc(p0, pm, seg=14):
+    # 仅首尾小段贝塞尔圆弧，中间直线，实现拐角近似直角
+    def start_arc(p0, pm, seg=10):
         pts = []
-        for t in np.linspace(0, 0.38, seg):
+        for t in np.linspace(0, 0.25, seg):
             la = (1-t)**2 * p0[0] + 2*(1-t)*t * pm[0] + t**2 * e_lat
             lo = (1-t)**2 * p0[1] + 2*(1-t)*t * pm[1] + t**2 * e_lon
             pts.append((la, lo))
         return pts
 
-    # 终点末端小幅收弯【修正入参】
     def end_arc(p_mid, p_end, seg=10):
         pts = []
         mid_p = ((p_mid[0]+p_end[0])/2, (p_mid[1]+p_end[1])/2)
-        for t in np.linspace(0.65, 1.0, seg):
+        for t in np.linspace(0.75, 1.0, seg):
             la = (1-t)**2 * p_mid[0] + 2*(1-t)*t * mid_p[0] + t**2 * p_end[0]
             lo = (1-t)**2 * p_mid[1] + 2*(1-t)*t * mid_p[1] + t**2 * p_end[1]
             pts.append((la, lo))
         return pts
 
-    # 直接飞越：全段平滑小弧线
+    # 直飞全程平滑参考线
     mid_zhifei = ((start[0]+end[0])/2, (start[1]+end[1])/2)
     def full_smooth(p0,pm,p1,n=12):
         arr=[]
@@ -176,7 +175,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         return arr
     routes["直接飞越"] = full_smooth(start,mid_zhifei,end,12)
 
-    # 障碍物高度判定
+    # 读取障碍物最大高度
     max_obs_height = 0
     for idx in range(len(obstacle_list)):
         h = obstacle_heights.get(idx,50)
@@ -185,7 +184,6 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     if fly_height>max_obs_height or not obstacle_list:
         return routes
 
-    # 合并障碍物轮廓
     all_poly = []
     for co in obstacle_list:
         all_poly.append(Polygon(co))
@@ -196,19 +194,17 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     lat_off,lon_off = meter_to_latlon_offset(clat,safe_radius)
     buf = merged.buffer(safe_radius/111319.9)
 
-    # 控制点：左绕行锚点精准在建筑西侧空地（图纸蓝线路径）
-    offset_scale =7.9
+    # 锚点外扩，紧贴建筑群外侧空地，平行楼栋
+    offset_scale =8.6
     left_ok=False
     right_ok=False
     lp=None
     rp=None
-    maxtry=30
-    add=2.1
+    maxtry=32
+    add=2.3
     for _ in range(maxtry):
-        # 左控制点：往西+往北偏移，匹配图西侧空地
-        lp=(cpoint.y+lat_off*offset_scale*1.18, cpoint.x-lon_off*offset_scale*1.35)
-        # 右控制点：东侧马路
-        rp=(cpoint.y-lat_off*offset_scale, cpoint.x+lon_off*offset_scale*1.22)
+        lp=(cpoint.y+lat_off*offset_scale*1.22, cpoint.x-lon_off*offset_scale*1.42)
+        rp=(cpoint.y-lat_off*offset_scale, cpoint.x+lon_off*offset_scale*1.28)
         lline=LineString([start,lp,end])
         rline=LineString([start,rp,end])
         if not lline.intersects(buf):left_ok=True
@@ -216,15 +212,11 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         if left_ok and right_ok:break
         offset_scale+=add
 
-    # 【核心构造：三段拼接 = 图纸样式：起弧+长直线+尾弧】
+    # 航线组装：起小圆弧 + 超长平直直线 + 末端小圆弧 → 中间段近似直角走线
     def build_route(p_start,p_anchor,p_end):
-        # 1、起点平滑拐弯段
-        arc_start = start_arc(p_start,p_anchor,14)
-        # 2、中间长直线（去掉首尾，中间直线路径）
+        arc_start = start_arc(p_start,p_anchor,10)
         line_mid_start = arc_start[-1]
-        # 3、终点收弯段【修正传参】
         arc_end = end_arc(line_mid_start, p_end, seg=10)
-        # 拼接：起点弧 + 中间直线 + 末端收弧
         full = arc_start
         full.append(p_end)
         full += arc_end[1:]
@@ -235,7 +227,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     if right_ok:
         routes["右侧绕行"]=build_route(start,rp,end)
 
-    # 择优：左绕距离最短=最优蓝色（和图纸蓝线）
+    # 优选最短为最优航线
     min_d=float("inf")
     best_r=None
     best_n=""
@@ -252,6 +244,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         routes[f"最优航线（{best_n}）"]=best_r
 
     return routes
+
 
 # ========================== 全局状态初始化 ==========================
 if 'current_page' not in st.session_state:
