@@ -244,8 +244,6 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         routes[f"最优航线（{best_n}）"]=best_r
 
     return routes
-
-
 # ========================== 全局状态初始化 ==========================
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "航线规划"
@@ -432,16 +430,18 @@ if st.session_state.current_page == "航线规划":
             )
             folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="flag")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
-
-            if "左侧绕行" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["左侧绕行"], color="#FF0000", weight=5, opacity=0.8, popup="左侧绕行·西侧空地").add_to(m)
-            if "右侧绕行" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["右侧绕行"], color="#FFA500", weight=5, opacity=0.8, popup="右侧绕行·东侧马路").add_to(m)
-            if any("最优航线" in k for k in st.session_state.all_routes.keys()):
-                best_route_key = [k for k in st.session_state.all_routes.keys() if "最优航线" in k][0]
-                folium.PolyLine(st.session_state.all_routes[best_route_key], color="#0000FF", weight=7, opacity=1.0, popup=best_route_key).add_to(m)
-            if "直接飞越" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["直接飞越"], color="#808080", weight=3, opacity=0.5, popup="直接飞越平滑曲线").add_to(m)
+           
+         # 左绕、右绕、最优统一蓝色实线
+if "左侧绕行" in st.session_state.all_routes:
+    folium.PolyLine(st.session_state.all_routes["左侧绕行"], color="#0044FF", weight=5, opacity=0.8, popup="左侧绕行").add_to(m)
+if "右侧绕行" in st.session_state.all_routes:
+    folium.PolyLine(st.session_state.all_routes["右侧绕行"], color="#0044FF", weight=5, opacity=0.8, popup="右侧绕行").add_to(m)
+if any("最优航线" in k for k in st.session_state.all_routes.keys()):
+    best_route_key = [k for k in st.session_state.all_routes.keys() if "最优航线" in k][0]
+    folium.PolyLine(st.session_state.all_routes[best_route_key], color="#0044FF", weight=5, opacity=1.0, popup=best_route_key).add_to(m)
+# 直飞保留灰色不变
+if "直接飞越" in st.session_state.all_routes:
+    folium.PolyLine(st.session_state.all_routes["直接飞越"], color="#808080", weight=3, opacity=0.5, popup="直接飞越平滑曲线").add_to(m)
 
             for idx, poly in enumerate(st.session_state.obstacle_polygons):
                 folium.Polygon(
