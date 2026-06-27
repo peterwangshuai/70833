@@ -1,6 +1,7 @@
-   streamlit
-pandas
-numpy
-folium==0.14.0
+streamlit
+folium
 streamlit-folium
 shapely
+numpy
+pandas
+networkx
