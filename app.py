@@ -75,7 +75,7 @@ def smooth_bezier(points, seg_num=12):
             smooth_pts.append((round(la,6), round(lo,6)))
     return smooth_pts
 
-# -------------------------- 核心避障算法：左右绕行+直飞越障+最优选择 --------------------------
+# -------------------------- 核心避障算法：增加空障碍物容错 --------------------------
 def plan_avoidance_routes(start, end, obstacle_polys, fly_height, safe_meter, obs_height_list):
     routes = {}
     s_lat, s_lon = start
@@ -85,10 +85,12 @@ def plan_avoidance_routes(start, end, obstacle_polys, fly_height, safe_meter, ob
     straight_line = LineString([(s_lon, s_lat), (e_lon, e_lat)])
     routes["直飞航线(越障备选)"] = smooth_bezier([start, end])
 
-    # 合并障碍物 + 生成安全缓冲区
+    # 无障碍物，直接返回直飞
     if len(obstacle_polys) == 0:
         routes["最优航线"] = routes["直飞航线(越障备选)"]
-        return routes
+        return routes, None
+
+    # 合并障碍物 + 生成安全缓冲区
     poly_list = []
     for coords in obstacle_polys:
         poly = Polygon([(lon, lat) for lat, lon in coords])
@@ -101,12 +103,12 @@ def plan_avoidance_routes(start, end, obstacle_polys, fly_height, safe_meter, ob
     # 判断高度：可以直接飞越障碍物
     if fly_height > max(obs_height_list):
         routes["最优航线"] = routes["直飞航线(越障备选)"]
-        return routes
+        return routes, safe_zone
 
     # 判断直飞是否碰撞安全区
     if not straight_line.intersects(safe_zone):
         routes["最优航线"] = routes["直飞航线(越障备选)"]
-        return routes
+        return routes, safe_zone
 
     # 生成左侧绕行（西边空地）
     try:
@@ -122,7 +124,7 @@ def plan_avoidance_routes(start, end, obstacle_polys, fly_height, safe_meter, ob
         bypass = (mid_lat + off_lat, mid_lon - off_lon)
         routes["左侧绕行(西侧空地)"] = smooth_bezier([start, bypass, end])
 
-    # 生成右侧绕行（东侧马路）
+    # 生成右侧绕行（东边马路）
     try:
         right_offset = offset_curve(safe_zone.boundary, -buf_deg, join_style="round", quad_segs=12)
         right_coords = [(p[1], p[0]) for p in right_offset.coords]
@@ -136,7 +138,7 @@ def plan_avoidance_routes(start, end, obstacle_polys, fly_height, safe_meter, ob
         bypass = (mid_lat - off_lat, mid_lon + off_lon)
         routes["右侧绕行(东侧马路)"] = smooth_bezier([start, bypass, end])
 
-    # 自动选出里程最短的绕行作为最优航线
+    # 选出最短绕行作为最优航线
     def get_len(pts):
         total = 0
         for i in range(len(pts)-1):
@@ -171,7 +173,7 @@ if "fly_h" not in st.session_state:
 if "safe_dist" not in st.session_state:
     st.session_state.safe_dist = 5
 
-# -------------------------- 左侧侧边栏（严格复刻截图布局） --------------------------
+# -------------------------- 左侧侧边栏（复刻截图布局） --------------------------
 with st.sidebar:
     st.subheader("🧭 导航")
     page_sel = st.radio("", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
@@ -189,7 +191,7 @@ with st.sidebar:
         st.session_state.map_key += 1
         st.rerun()
 
-# -------------------------- 主界面布局：地图 + 右侧控制面板 --------------------------
+# -------------------------- 主界面：地图 + 右侧控制面板 --------------------------
 if st.session_state.page == "航线规划":
     st.title("🗺️ 无人机可视图平滑避障航线规划系统")
     col_map, col_ctrl = st.columns([2, 1])
@@ -233,7 +235,7 @@ if st.session_state.page == "航线规划":
             obs_height_list=st.session_state.obs_heights
         )
 
-        # 初始化地图（卫星底图）
+        # 初始化卫星地图
         map_center = ((g_start_lat+g_end_lat)/2, (g_start_lon+g_end_lon)/2)
         m = folium.Map(
             location=map_center,
@@ -246,20 +248,21 @@ if st.session_state.page == "航线规划":
         folium.Marker([g_start_lat, g_start_lon], icon=folium.Icon(color="green", icon="plane")).add_to(m)
         folium.Marker([g_end_lat, g_end_lon], icon=folium.Icon(color="red", icon="flag")).add_to(m)
 
-        # 绘制障碍物安全缓冲区（蓝色虚线框）
-        folium.Polygon(
-            locations=[(p[1], p[0]) for p in safe_buffer.exterior.coords],
-            color="blue", fill=False, dash_array="6,6", weight=3
-        ).add_to(m)
+        # 【修复】只有存在缓冲区才绘制虚线框
+        if safe_buffer is not None:
+            folium.Polygon(
+                locations=[(p[1], p[0]) for p in safe_buffer.exterior.coords],
+                color="blue", fill=False, dash_array="6,6", weight=3
+            ).add_to(m)
 
-        # 绘制障碍物本体（红色填充）
-        for idx, coords in enumerate(st.session_state.obs_polygons):
+        # 绘制障碍物本体
+        for coords in st.session_state.obs_polygons:
             folium.Polygon(
                 locations=coords,
                 color="red", fill_color="red", fill_opacity=0.5, weight=2
             ).add_to(m)
 
-        # 分颜色绘制多条航线，和图例严格对应
+        # 多航线分色绘制
         route_style = {
             "左侧绕行(西侧空地)": {"color":"#c82423", "weight":4},
             "右侧绕行(东侧马路)": {"color":"#d2691e", "weight":4},
@@ -268,9 +271,9 @@ if st.session_state.page == "航线规划":
         }
         for name, pts in route_dict.items():
             style = route_style[name]
-            folium.PolyLine(pts, **style).add_to(m)
+            folium.PolyLine(pts,** style).add_to(m)
 
-        # 绘图工具：只允许画多边形障碍物
+        # 绘图工具
         from folium.plugins import Draw
         draw = Draw(
             position="topleft",
@@ -283,7 +286,7 @@ if st.session_state.page == "航线规划":
         )
         draw.add_to(m)
 
-        # 渲染地图并接收绘制的障碍物
+        # 接收绘制的障碍物
         map_out = st_folium(m, width=1050, height=720, key=f"map_{st.session_state.map_key}")
         if map_out and map_out.get("last_active_drawing"):
             geo = map_out["last_active_drawing"]["geometry"]
