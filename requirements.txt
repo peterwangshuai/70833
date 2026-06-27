@@ -5,3 +5,4 @@ shapely
 numpy
 pandas
 networkx
+pymavlink
