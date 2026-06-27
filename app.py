@@ -312,16 +312,16 @@ if st.session_state.current_page == "航线规划":
     with col_control:
         st.subheader("⚙️ 控制面板")
         st.markdown("#### 📍 起点A")
-        input_a_lat = st.number_input("纬度", value=32.234097, format="%.6f", key="a_lat")
-        input_a_lon = st.number_input("经度", value=118.749413, format="%.6f", key="a_lon")
+        input_a_lat = st.number_input("纬度", value=32.232500, format="%.6f", key="a_lat")
+        input_a_lon = st.number_input("经度", value=118.749000, format="%.6f", key="a_lon")
         if st.button("✅ 设置A点", use_container_width=True):
             st.success("起点A已更新！地图将刷新")
             st.session_state.map_rerun_key += 1
             st.rerun()
         st.divider()
         st.markdown("#### 📍 终点B")
-        input_b_lat = st.number_input("纬度 ", value=32.235000, format="%.6f", key="b_lat")
-        input_b_lon = st.number_input("经度 ", value=118.749413, format="%.6f", key="b_lon")
+        input_b_lat = st.number_input("纬度 ", value=32.235500, format="%.6f", key="b_lat")
+        input_b_lon = st.number_input("经度 ", value=118.749500, format="%.6f", key="b_lon")
         if st.button("✅ 设置B点", use_container_width=True):
             st.success("终点B已更新！地图将刷新")
             st.session_state.map_rerun_key += 1
