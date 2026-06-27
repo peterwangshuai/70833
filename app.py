@@ -516,17 +516,61 @@ if st.session_state.current_page == "航线规划":
 
         render_map()
 
-# ========================== 飞行监控页面 ==========================
+# ========================== 飞行监控页面（带预留接口） ==========================
 elif st.session_state.current_page == "飞行监控":
     st.header("📡 飞行监控（心跳包实时展示）")
-    c1,c2,c3 = st.columns(3)
+
+    # ---------- 预留函数接口 ----------
+    def mavlink_data_receive():
+        """
+        预留：持续监听 UDP:14550 接收 MAVLink 数据包。
+        后续用 pymavlink 实现，yield 原始消息。
+        """
+        # from pymavlink import mavutil
+        # master = mavutil.mavlink_connection('udp:127.0.0.1:14550')
+        # master.wait_heartbeat()
+        # while st.session_state.is_running:
+        #     msg = master.recv_match(type=['ATTITUDE', 'LOCAL_POSITION_NED', 'GLOBAL_POSITION_INT'])
+        #     if msg:
+        #         yield msg
+        pass
+
+    def data_parse(raw_msg):
+        """
+        预留：解析 MAVLink 消息，提取位置(经纬度)、高度、姿态。
+        返回 dict，例如：{'lat': 32.23, 'lon': 118.74, 'alt': 10.5, 'roll': 0.1, ...}
+        """
+        # 示例解析结构（待实现）
+        return {}
+
+    def ui_refresh(parsed_data):
+        """
+        预留：将解析后的数据推送到前端显示（比如更新 st.text 或 st.metric）。
+        """
+        # st.session_state.real_time_info = parsed_data
+        pass
+
+    # ---------- UI 控件 ----------
+    c1, c2, c3 = st.columns(3)
     with c1: start = st.button("▶️ 启动飞行", type="primary")
     with c2: pause = st.button("⏸️ 暂停飞行")
     with c3: reset = st.button("🔄 重置数据")
-    if start: st.session_state.is_running = True
-    if pause: st.session_state.is_running = False
+
+    if start:
+        st.session_state.is_running = True
+        # 预留：启动后台 UDP 接收线程（需用 threading，避免阻塞主线程）
+        # import threading
+        # if not st.session_state.mavlink_thread_running:
+        #     thread = threading.Thread(target=mavlink_data_receive, daemon=True)
+        #     thread.start()
+        #     st.session_state.mavlink_thread_running = True
+
+    if pause:
+        st.session_state.is_running = False
+        # 预留：停止线程或关闭连接
+
     if reset:
-        st.session_state.df_history = pd.DataFrame(columns=["时间","序号"])
+        st.session_state.df_history = pd.DataFrame(columns=["时间", "序号"])
         st.session_state.is_running = False
         st.rerun()
 
@@ -534,17 +578,28 @@ elif st.session_state.current_page == "飞行监控":
     chart_area = st.empty()
     list_area = st.empty()
 
+    # ---------- 模拟心跳显示（后续替换为真实数据） ----------
     while st.session_state.is_running:
+        # ===== 这一段以后要改成接收真实 MAVLink 数据 =====
+        # 目前是模拟数据，保留作为演示
         now_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        seq = len(st.session_state.df_history)+1
-        new_row = pd.DataFrame({"时间":[now_time],"序号":[seq]})
-        st.session_state.df_history = pd.concat([st.session_state.df_history,new_row], ignore_index=True)
+        seq = len(st.session_state.df_history) + 1
+        new_row = pd.DataFrame({"时间": [now_time], "序号": [seq]})
+        st.session_state.df_history = pd.concat([st.session_state.df_history, new_row], ignore_index=True)
+
+        # 显示图表和表格
         chart_area.line_chart(st.session_state.df_history, x="时间", y="序号", color="#39ff14")
         list_area.dataframe(st.session_state.df_history.tail(10), hide_index=True, height=400)
         status.success(f"✅ 飞行运行正常 | 心跳序号：{seq}")
+
+        # 这里可以调用 ui_refresh(real_data) 显示真实数据
+        # real_data = data_parse(接收到的消息)
+        # ui_refresh(real_data)
+
         st.session_state.last_received = time.time()
         time.sleep(1)
 
+    # 异常检测（仍为占位）
     if st.session_state.last_received and not st.session_state.is_running:
         elapsed = time.time() - st.session_state.last_received
         if elapsed > 3 and len(st.session_state.df_history) > 0:
