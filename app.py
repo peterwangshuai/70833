@@ -110,6 +110,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     s_lat, s_lon = start
     e_lat, e_lon = end
 
+    # 直飞参考线
     def full_smooth(p0,pm,p1,n=12):
         arr=[]
         for t in np.linspace(0,1,n):
@@ -117,49 +118,85 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
             lo=(1-t)**2*p0[1]+2*(1-t)*t*pm[1]+t**2*p1[1]
             arr.append((la,lo))
         return arr
-
     mid = ((s_lat+e_lat)/2, (s_lon+e_lon)/2)
     routes["直飞参考"] = full_smooth(start, mid, end)
 
-    max_h = 0
-    for h in obstacle_heights.values():
-        if h>max_h:max_h=h
+    # 高度判断：飞行高度超障碍物则直飞
+    max_h = max(obstacle_heights.values()) if obstacle_heights else 0
     if fly_height > max_h or len(obstacle_list)==0:
         return routes
 
+    # 构建障碍物缓冲区（安全距离）
     polys = [Polygon(o) for o in obstacle_list]
     merged = unary_union(polys)
-    buf = merged.buffer(safe_radius / 111319.9)
+    buf = merged.buffer(safe_radius / 111319.9)  # 米转经纬度
 
-    def get_route(side):
-        coords = list(buf.boundary.coords)
-        pts = [(p[1],p[0]) for p in coords]
-        half = len(pts)//2
-        if side=="left":
-            path = [start]+pts[:half:5]+[end]
+    # 核心改进：局部寻路（只在起点-终点的包围盒内找拐点）
+    def get_local_route(side):
+        # 1. 计算起点-终点的局部包围盒（只在这个范围内找拐点）
+        min_lat = min(s_lat, e_lat) - 0.001  # 约100米范围
+        max_lat = max(s_lat, e_lat) + 0.001
+        min_lon = min(s_lon, e_lon) - 0.001
+        max_lon = max(s_lon, e_lon) + 0.001
+        
+        # 2. 提取缓冲区边界点，只保留包围盒内的点
+        boundary_coords = list(buf.boundary.coords)
+        local_pts = []
+        for lon, lat in boundary_coords:
+            if min_lat < lat < max_lat and min_lon < lon < max_lon:
+                local_pts.append((lat, lon))  # 转lat/lon格式
+        
+        # 3. 加密采样步长（步长从5→2，贴近小障碍物）
+        if not local_pts:  # 无局部点则用原始逻辑
+            local_pts = [(p[1],p[0]) for p in boundary_coords]
+        
+        half = len(local_pts)//2
+        if side == "left":
+            path_pts = local_pts[:half:2]  # 加密步长：2
         else:
-            path = [start]+pts[half::5]+[end]
-        clean = [path[0]]
-        for p in path[1:]:
-            if not LineString([clean[-1],p]).intersects(buf):
-                clean.append(p)
-        return clean
+            path_pts = local_pts[half::2]
+        
+        # 4. 构建局部路径：起点 → 障碍物周边拐点 → 终点
+        full_path = [start] + path_pts + [end]
+        
+        # 5. 清洗无效拐点（只保留离障碍物近的点）
+        clean_path = [full_path[0]]
+        for pt in full_path[1:-1]:
+            # 只保留距离障碍物<2倍安全半径的拐点
+            pt_point = Point(pt[1], pt[0])
+            if pt_point.distance(merged) < (safe_radius * 2) / 111319.9:
+                clean_path.append(pt)
+        clean_path.append(end)
+        
+        # 6. 最终校验：剔除穿障线段
+        final_path = [clean_path[0]]
+        for p in clean_path[1:]:
+            seg = LineString([final_path[-1], p])
+            if not seg.intersects(buf):
+                final_path.append(p)
+        
+        return final_path
 
-    routes["左侧绕行"] = get_route("left")
-    routes["右侧绕行"] = get_route("right")
+    # 生成左右局部绕行航线
+    routes["左侧绕行"] = get_local_route("left")
+    routes["右侧绕行"] = get_local_route("right")
 
-    def dist(pts):
-        d=0
+    # 计算航线长度，选最短的作为最优
+    def calc_route_length(pts):
+        total = 0
         for i in range(len(pts)-1):
-            d+=latlon_to_meter(*pts[i],*pts[i+1])
-        return d
-
-    if dist(routes["左侧绕行"]) < dist(routes["右侧绕行"]):
+            total += latlon_to_meter(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
+        return total
+    
+    len_left = calc_route_length(routes["左侧绕行"])
+    len_right = calc_route_length(routes["右侧绕行"])
+    
+    if len_left <= len_right:
         routes["✅ 最优最短航线"] = routes["左侧绕行"]
     else:
         routes["✅ 最优最短航线"] = routes["右侧绕行"]
-    return routes
 
+    return routes
 # ========================== 状态初始化 ==========================
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "航线规划"
