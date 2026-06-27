@@ -516,93 +516,288 @@ if st.session_state.current_page == "航线规划":
 
         render_map()
 
-# ========================== 飞行监控页面（带预留接口） ==========================
+# ========================== 飞行监控页面（完整 pymavlink 实现） ==========================
 elif st.session_state.current_page == "飞行监控":
-    st.header("📡 飞行监控（心跳包实时展示）")
+    import threading
+    import queue
+    import math
+    from pymavlink import mavutil
 
-    # ---------- 预留函数接口 ----------
-    def mavlink_data_receive():
+    st.header("📡 飞行监控（SITL 实时数据）")
+
+    # ---------- 全局数据队列（线程间通信） ----------
+    if 'mavlink_queue' not in st.session_state:
+        st.session_state.mavlink_queue = queue.Queue(maxsize=100)
+    if 'mavlink_thread' not in st.session_state:
+        st.session_state.mavlink_thread = None
+    if 'mavlink_running' not in st.session_state:
+        st.session_state.mavlink_running = False
+    if 'real_time_data' not in st.session_state:
+        st.session_state.real_time_data = {
+            'lat': None, 'lon': None, 'alt': None, 'rel_alt': None,
+            'roll': None, 'pitch': None, 'yaw': None,
+            'voltage': None, 'current': None, 'battery': None,
+            'heartbeat_seq': 0, 'last_update': None
+        }
+
+    # ---------- 预留函数接口（已实现） ----------
+    def mavlink_data_receive(queue_obj, stop_event):
         """
-        预留：持续监听 UDP:14550 接收 MAVLink 数据包。
-        后续用 pymavlink 实现，yield 原始消息。
+        持续监听 UDP 端口 14550，接收 MAVLink 数据包。
+        使用 pymavlink 库连接 SITL。
         """
-        # from pymavlink import mavutil
-        # master = mavutil.mavlink_connection('udp:127.0.0.1:14550')
-        # master.wait_heartbeat()
-        # while st.session_state.is_running:
-        #     msg = master.recv_match(type=['ATTITUDE', 'LOCAL_POSITION_NED', 'GLOBAL_POSITION_INT'])
-        #     if msg:
-        #         yield msg
-        pass
+        try:
+            # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）[reference:0][reference:1]
+            master = mavutil.mavlink_connection(
+                'udpin:0.0.0.0:14550',
+                dialect='ardupilotmega'  # ArduPilot 用 ardupilotmega，PX4 用 'common'
+            )
+
+            # 等待心跳包，确认飞控已连接[reference:2][reference:3]
+            print("⏳ 等待 SITL 心跳包...")
+            master.wait_heartbeat(timeout=10)
+            print(f"✅ 已连接 — system {master.target_system}, component {master.target_component}")
+
+            # 要接收的消息类型[reference:4]
+            TARGETS = ['GLOBAL_POSITION_INT', 'ATTITUDE', 'SYS_STATUS']
+
+            while not stop_event.is_set():
+                try:
+                    # 阻塞接收，超时 0.5 秒[reference:5]
+                    msg = master.recv_match(type=TARGETS, blocking=True, timeout=0.5)
+                    if msg is None:
+                        continue
+
+                    msg_type = msg.get_type()
+                    parsed = {'type': msg_type, 'timestamp': time.time()}
+
+                    # ----- 解析 GLOBAL_POSITION_INT（位置信息） -----
+                    if msg_type == 'GLOBAL_POSITION_INT':
+                        # lat/lon: 1e-7 度 → 十进制度[reference:6][reference:7]
+                        parsed['lat'] = msg.lat / 1e7
+                        parsed['lon'] = msg.lon / 1e7
+                        parsed['alt'] = msg.alt / 1000       # mm → m (MSL)
+                        parsed['rel_alt'] = msg.relative_alt / 1000  # mm → m (相对起飞点)
+                        parsed['hdg'] = msg.hdg / 100        # 0.01° → °
+
+                    # ----- 解析 ATTITUDE（姿态信息） -----
+                    elif msg_type == 'ATTITUDE':
+                        # 弧度 → 度[reference:8]
+                        parsed['roll'] = math.degrees(msg.roll)
+                        parsed['pitch'] = math.degrees(msg.pitch)
+                        parsed['yaw'] = math.degrees(msg.yaw)
+
+                    # ----- 解析 SYS_STATUS（电池/系统状态） -----
+                    elif msg_type == 'SYS_STATUS':
+                        parsed['voltage'] = msg.voltage_battery / 1000   # mV → V[reference:9]
+                        parsed['current'] = msg.current_battery / 100    # cA → A
+                        parsed['battery'] = msg.battery_remaining        # % (-1 表示未知)
+
+                    # 放入队列（非阻塞，队列满则丢弃旧数据）
+                    try:
+                        queue_obj.put_nowait(parsed)
+                    except queue.Full:
+                        # 队列满了就扔掉最旧的一条，再放新的
+                        try:
+                            queue_obj.get_nowait()
+                        except queue.Empty:
+                            pass
+                        queue_obj.put_nowait(parsed)
+
+                except Exception as e:
+                    print(f"⚠️ 接收消息异常: {e}")
+                    time.sleep(0.1)
+
+        except Exception as e:
+            print(f"❌ MAVLink 连接失败: {e}")
+            # 放一条错误信息到队列
+            try:
+                queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
+            except queue.Full:
+                pass
 
     def data_parse(raw_msg):
         """
-        预留：解析 MAVLink 消息，提取位置(经纬度)、高度、姿态。
-        返回 dict，例如：{'lat': 32.23, 'lon': 118.74, 'alt': 10.5, 'roll': 0.1, ...}
+        解析 MAVLink 消息，提取位置、高度、姿态。
+        返回 dict 包含 lat, lon, alt, roll, pitch, yaw 等。
         """
-        # 示例解析结构（待实现）
-        return {}
+        # 直接从队列来的消息已经是解析好的 dict，直接返回
+        # 但如果需要额外处理可以在这里扩展
+        return raw_msg
 
     def ui_refresh(parsed_data):
         """
-        预留：将解析后的数据推送到前端显示（比如更新 st.text 或 st.metric）。
+        将解析出的数据推送到前端文本控件动态更新。
         """
-        # st.session_state.real_time_info = parsed_data
-        pass
+        if not parsed_data:
+            return
+
+        msg_type = parsed_data.get('type')
+
+        if msg_type == 'GLOBAL_POSITION_INT':
+            st.session_state.real_time_data['lat'] = parsed_data.get('lat')
+            st.session_state.real_time_data['lon'] = parsed_data.get('lon')
+            st.session_state.real_time_data['alt'] = parsed_data.get('alt')
+            st.session_state.real_time_data['rel_alt'] = parsed_data.get('rel_alt')
+            st.session_state.real_time_data['last_update'] = parsed_data.get('timestamp')
+
+        elif msg_type == 'ATTITUDE':
+            st.session_state.real_time_data['roll'] = parsed_data.get('roll')
+            st.session_state.real_time_data['pitch'] = parsed_data.get('pitch')
+            st.session_state.real_time_data['yaw'] = parsed_data.get('yaw')
+
+        elif msg_type == 'SYS_STATUS':
+            st.session_state.real_time_data['voltage'] = parsed_data.get('voltage')
+            st.session_state.real_time_data['current'] = parsed_data.get('current')
+            st.session_state.real_time_data['battery'] = parsed_data.get('battery')
+
+        # 更新心跳序号（每收到一条消息加 1）
+        st.session_state.real_time_data['heartbeat_seq'] += 1
 
     # ---------- UI 控件 ----------
     c1, c2, c3 = st.columns(3)
-    with c1: start = st.button("▶️ 启动飞行", type="primary")
-    with c2: pause = st.button("⏸️ 暂停飞行")
-    with c3: reset = st.button("🔄 重置数据")
+    with c1:
+        start = st.button("▶️ 启动飞行", type="primary", use_container_width=True)
+    with c2:
+        pause = st.button("⏸️ 暂停飞行", use_container_width=True)
+    with c3:
+        reset = st.button("🔄 重置数据", use_container_width=True)
 
+    # ---------- 启动/停止逻辑 ----------
     if start:
-        st.session_state.is_running = True
-        # 预留：启动后台 UDP 接收线程（需用 threading，避免阻塞主线程）
-        # import threading
-        # if not st.session_state.mavlink_thread_running:
-        #     thread = threading.Thread(target=mavlink_data_receive, daemon=True)
-        #     thread.start()
-        #     st.session_state.mavlink_thread_running = True
+        if not st.session_state.mavlink_running:
+            st.session_state.mavlink_running = True
+            st.session_state.mavlink_stop_event = threading.Event()
+            # 启动后台线程接收 MAVLink 数据
+            st.session_state.mavlink_thread = threading.Thread(
+                target=mavlink_data_receive,
+                args=(st.session_state.mavlink_queue, st.session_state.mavlink_stop_event),
+                daemon=True
+            )
+            st.session_state.mavlink_thread.start()
+            st.success("✅ MAVLink 监听已启动！")
+        else:
+            st.info("⏳ 已在运行中")
 
     if pause:
-        st.session_state.is_running = False
-        # 预留：停止线程或关闭连接
+        if st.session_state.mavlink_running:
+            st.session_state.mavlink_running = False
+            if st.session_state.mavlink_stop_event:
+                st.session_state.mavlink_stop_event.set()
+            st.warning("⏸️ 已暂停 MAVLink 监听")
+        else:
+            st.info("⏸️ 已处于暂停状态")
 
     if reset:
+        st.session_state.mavlink_running = False
+        if st.session_state.mavlink_stop_event:
+            st.session_state.mavlink_stop_event.set()
+        st.session_state.mavlink_queue = queue.Queue(maxsize=100)
+        st.session_state.real_time_data = {
+            'lat': None, 'lon': None, 'alt': None, 'rel_alt': None,
+            'roll': None, 'pitch': None, 'yaw': None,
+            'voltage': None, 'current': None, 'battery': None,
+            'heartbeat_seq': 0, 'last_update': None
+        }
         st.session_state.df_history = pd.DataFrame(columns=["时间", "序号"])
-        st.session_state.is_running = False
         st.rerun()
 
-    status = st.empty()
-    chart_area = st.empty()
-    list_area = st.empty()
+    # ---------- 实时数据显示 ----------
+    # 从队列中取出所有待处理消息并刷新 UI
+    while not st.session_state.mavlink_queue.empty():
+        try:
+            msg = st.session_state.mavlink_queue.get_nowait()
+            # 如果是错误消息，显示错误
+            if msg.get('type') == 'ERROR':
+                st.error(f"🚨 {msg.get('msg')}")
+                continue
+            # 解析并刷新 UI
+            parsed = data_parse(msg)
+            ui_refresh(parsed)
+        except queue.Empty:
+            break
 
-    # ---------- 模拟心跳显示（后续替换为真实数据） ----------
-    while st.session_state.is_running:
-        # ===== 这一段以后要改成接收真实 MAVLink 数据 =====
-        # 目前是模拟数据，保留作为演示
+    # ---------- 显示实时数据卡片 ----------
+    rd = st.session_state.real_time_data
+
+    col_status, col_gps, col_att, col_bat = st.columns(4)
+
+    with col_status:
+        st.metric(
+            "📶 连接状态",
+            "🟢 在线" if rd['last_update'] and (time.time() - rd['last_update'] < 3) else "🔴 离线",
+            delta=f"心跳 #{rd['heartbeat_seq']}" if rd['heartbeat_seq'] > 0 else None
+        )
+        if rd['last_update']:
+            st.caption(f"最后更新: {time.strftime('%H:%M:%S', time.localtime(rd['last_update']))}")
+
+    with col_gps:
+        st.metric(
+            "📍 位置",
+            f"{rd['lat']:.6f}, {rd['lon']:.6f}" if rd['lat'] is not None else "等待数据...",
+            delta=f"高度 {rd['alt']:.1f}m" if rd['alt'] is not None else None
+        )
+
+    with col_att:
+        st.metric(
+            "🧭 姿态",
+            f"滚 {rd['roll']:.1f}°" if rd['roll'] is not None else "等待数据...",
+            delta=f"俯仰 {rd['pitch']:.1f}° 偏航 {rd['yaw']:.1f}°" if rd['pitch'] is not None else None
+        )
+
+    with col_bat:
+        st.metric(
+            "🔋 电池",
+            f"{rd['voltage']:.2f}V" if rd['voltage'] is not None else "等待数据...",
+            delta=f"{rd['battery']}%" if rd['battery'] is not None and rd['battery'] >= 0 else None
+        )
+
+    st.divider()
+
+    # ---------- 历史心跳图表 ----------
+    st.subheader("📈 心跳包历史记录")
+
+    # 如果有实时数据，自动追加到历史记录
+    if rd['last_update'] and rd['heartbeat_seq'] > len(st.session_state.df_history):
         now_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        seq = len(st.session_state.df_history) + 1
-        new_row = pd.DataFrame({"时间": [now_time], "序号": [seq]})
-        st.session_state.df_history = pd.concat([st.session_state.df_history, new_row], ignore_index=True)
+        new_row = pd.DataFrame({
+            "时间": [now_time],
+            "序号": [rd['heartbeat_seq']],
+            "纬度": [rd['lat']],
+            "经度": [rd['lon']],
+            "高度(m)": [rd['alt']]
+        })
+        st.session_state.df_history = pd.concat(
+            [st.session_state.df_history, new_row],
+            ignore_index=True
+        )
 
-        # 显示图表和表格
-        chart_area.line_chart(st.session_state.df_history, x="时间", y="序号", color="#39ff14")
-        list_area.dataframe(st.session_state.df_history.tail(10), hide_index=True, height=400)
-        status.success(f"✅ 飞行运行正常 | 心跳序号：{seq}")
+    # 显示图表和表格
+    if len(st.session_state.df_history) > 0:
+        chart_area = st.empty()
+        list_area = st.empty()
 
-        # 这里可以调用 ui_refresh(real_data) 显示真实数据
-        # real_data = data_parse(接收到的消息)
-        # ui_refresh(real_data)
+        # 显示心跳序号趋势图
+        chart_area.line_chart(
+            st.session_state.df_history[["序号"]],
+            x="时间" if "时间" in st.session_state.df_history.columns else None,
+            y="序号",
+            color="#39ff14",
+            height=200
+        )
 
-        st.session_state.last_received = time.time()
-        time.sleep(1)
+        # 显示最近 10 条记录
+        list_area.dataframe(
+            st.session_state.df_history.tail(10),
+            hide_index=True,
+            height=250,
+            use_container_width=True
+        )
+    else:
+        st.info("⏳ 等待接收 MAVLink 数据...")
 
-    # 异常检测（仍为占位）
-    if st.session_state.last_received and not st.session_state.is_running:
-        elapsed = time.time() - st.session_state.last_received
-        if elapsed > 3 and len(st.session_state.df_history) > 0:
-            status.error("🚨 连接异常！超过3秒未收到心跳包！")
-        else:
-            status.warning("⏸️ 飞行已暂停")
+    # ---------- 连接状态检测 ----------
+    if rd['last_update']:
+        elapsed = time.time() - rd['last_update']
+        if elapsed > 3 and rd['heartbeat_seq'] > 0:
+            st.error(f"🚨 连接异常！已 {elapsed:.1f} 秒未收到 MAVLink 消息！")
