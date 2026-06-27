@@ -234,8 +234,9 @@ if 'flight_height' not in st.session_state:
     st.session_state.flight_height = 10
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
+# 已固定起飞点
 if 'current_route_points' not in st.session_state:
-    st.session_state.current_route_points = [(32.2323, 118.749), (32.2344, 118.749)]
+    st.session_state.current_route_points = [(32.234111, 118.749428), (32.2344, 118.749)]
 if 'map_rerun_key' not in st.session_state:
     st.session_state.map_rerun_key = 0
 if 'all_routes' not in st.session_state:
@@ -266,9 +267,10 @@ if st.session_state.current_page == "航线规划":
     with col_control:
         st.subheader("⚙️ 控制面板")
 
-        st.markdown("#### 📍 起点A")
-        input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat")
-        input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon")
+        st.markdown("#### 📍 起点A（无人机起飞点）")
+        # 固定起飞点：纬度32.234111，经度118.749428
+        input_a_lat = st.number_input("纬度", value=32.234111, format="%.6f", key="a_lat")
+        input_a_lon = st.number_input("经度", value=118.749428, format="%.6f", key="a_lon")
         if st.button("✅ 设置A点", use_container_width=True):
             st.success("起点A已更新！地图将刷新")
             st.session_state.map_rerun_key += 1
@@ -276,8 +278,8 @@ if st.session_state.current_page == "航线规划":
         st.divider()
 
         st.markdown("#### 📍 终点B")
-        input_b_lat = st.number_input("纬度 ", value=32.2344, format="%.4f", key="b_lat")
-        input_b_lon = st.number_input("经度 ", value=118.749, format="%.3f", key="b_lon")
+        input_b_lat = st.number_input("纬度 ", value=32.2344, format="%.6f", key="b_lat")
+        input_b_lon = st.number_input("经度 ", value=118.749, format="%.6f", key="b_lon")
         if st.button("✅ 设置B点", use_container_width=True):
             st.success("终点B已更新！地图将刷新")
             st.session_state.map_rerun_key += 1
@@ -395,7 +397,7 @@ if st.session_state.current_page == "航线规划":
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri卫星地图"
             )
-            folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+            folium.Marker([a_lat, a_lon], popup="起点A 起飞点", icon=folium.Icon(color="red", icon="flag")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
 
             # 全部绕行统一深蓝色实线
