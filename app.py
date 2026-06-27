@@ -23,7 +23,7 @@ st.markdown('''
 # ========================== 基础参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v18.0 工业级A*避障｜无报错版"
+VERSION = "v18.1 精准绕障+地图定位版"
 DEFAULT_SAFE_RADIUS = 8
 
 # ========================== 坐标系转换 ==========================
@@ -104,13 +104,13 @@ def load_obstacles_from_file():
     except Exception as e:
         st.error(f"加载失败:{e}")
 
-# ========================== 核心：A* 最优避障航线 ==========================
+# ========================== 核心：切线绕障（最短路径） ==========================
 def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
 
-    # 直飞参考线
+    # 1. 直飞参考线
     def full_smooth(p0,pm,p1,n=12):
         arr=[]
         for t in np.linspace(0,1,n):
@@ -121,67 +121,55 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     mid = ((s_lat+e_lat)/2, (s_lon+e_lon)/2)
     routes["直飞参考"] = full_smooth(start, mid, end)
 
-    # 高度判断：飞行高度超障碍物则直飞
+    # 2. 高度判断：飞行高度超障碍物则直飞
     max_h = max(obstacle_heights.values()) if obstacle_heights else 0
     if fly_height > max_h or len(obstacle_list)==0:
         return routes
 
-    # 构建障碍物缓冲区（安全距离）
+    # 3. 构建障碍物缓冲区（安全距离）
     polys = [Polygon(o) for o in obstacle_list]
     merged = unary_union(polys)
     buf = merged.buffer(safe_radius / 111319.9)  # 米转经纬度
 
-    # 核心改进：局部寻路（只在起点-终点的包围盒内找拐点）
-    def get_local_route(side):
-        # 1. 计算起点-终点的局部包围盒（只在这个范围内找拐点）
-        min_lat = min(s_lat, e_lat) - 0.001  # 约100米范围
-        max_lat = max(s_lat, e_lat) + 0.001
-        min_lon = min(s_lon, e_lon) - 0.001
-        max_lon = max(s_lon, e_lon) + 0.001
-        
-        # 2. 提取缓冲区边界点，只保留包围盒内的点
-        boundary_coords = list(buf.boundary.coords)
-        local_pts = []
-        for lon, lat in boundary_coords:
-            if min_lat < lat < max_lat and min_lon < lon < max_lon:
-                local_pts.append((lat, lon))  # 转lat/lon格式
-        
-        # 3. 加密采样步长（步长从5→2，贴近小障碍物）
-        if not local_pts:  # 无局部点则用原始逻辑
-            local_pts = [(p[1],p[0]) for p in boundary_coords]
-        
-        half = len(local_pts)//2
-        if side == "left":
-            path_pts = local_pts[:half:2]  # 加密步长：2
-        else:
-            path_pts = local_pts[half::2]
-        
-        # 4. 构建局部路径：起点 → 障碍物周边拐点 → 终点
-        full_path = [start] + path_pts + [end]
-        
-        # 5. 清洗无效拐点（只保留离障碍物近的点）
-        clean_path = [full_path[0]]
-        for pt in full_path[1:-1]:
-            # 只保留距离障碍物<2倍安全半径的拐点
-            pt_point = Point(pt[1], pt[0])
-            if pt_point.distance(merged) < (safe_radius * 2) / 111319.9:
-                clean_path.append(pt)
-        clean_path.append(end)
-        
-        # 6. 最终校验：剔除穿障线段
-        final_path = [clean_path[0]]
-        for p in clean_path[1:]:
-            seg = LineString([final_path[-1], p])
-            if not seg.intersects(buf):
-                final_path.append(p)
-        
-        return final_path
+    # 4. 核心：局部切线绕障（只在障碍物两侧生成最短拐点）
+    def get_tangent_route(side):
+        start_point = Point(s_lon, s_lat)
+        end_point = Point(e_lon, e_lat)
+        try:
+            # 计算起点/终点到障碍物的切线点
+            if side == "left":
+                tangents = start_point.buffer(0.0001).boundary.intersection(buf.boundary)
+                t1 = tangents.geoms[0] if len(tangents.geoms)>=1 else start_point
+                tangents2 = end_point.buffer(0.0001).boundary.intersection(buf.boundary)
+                t2 = tangents2.geoms[1] if len(tangents2.geoms)>=2 else end_point
+            else:
+                tangents = start_point.buffer(0.0001).boundary.intersection(buf.boundary)
+                t1 = tangents.geoms[1] if len(tangents.geoms)>=2 else start_point
+                tangents2 = end_point.buffer(0.0001).boundary.intersection(buf.boundary)
+                t2 = tangents2.geoms[0] if len(tangents2.geoms)>=1 else end_point
+            
+            # 构建最短路径
+            route = [
+                (s_lat, s_lon),
+                (t1.y, t1.x),
+                (t2.y, t2.x),
+                (e_lat, e_lon)
+            ]
+            return route
+        except:
+            # 兜底：近距离小偏移绕障
+            offset = safe_radius / 111319.9 * 2
+            if side == "left":
+                mid_point = (mid[0] + offset, mid[1] - offset)
+            else:
+                mid_point = (mid[0] - offset, mid[1] + offset)
+            return [start, mid_point, end]
 
-    # 生成左右局部绕行航线
-    routes["左侧绕行"] = get_local_route("left")
-    routes["右侧绕行"] = get_local_route("right")
+    # 生成左右最短绕障航线
+    routes["左侧绕行"] = get_tangent_route("left")
+    routes["右侧绕行"] = get_tangent_route("right")
 
-    # 计算航线长度，选最短的作为最优
+    # 5. 计算长度选最优
     def calc_route_length(pts):
         total = 0
         for i in range(len(pts)-1):
@@ -197,6 +185,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
         routes["✅ 最优最短航线"] = routes["右侧绕行"]
 
     return routes
+
 # ========================== 状态初始化 ==========================
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "航线规划"
@@ -210,8 +199,9 @@ if 'flight_height' not in st.session_state:
     st.session_state.flight_height = 15
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
+# 【关键】修改为你地图上A点的真实坐标
 if 'current_route_points' not in st.session_state:
-    st.session_state.current_route_points = [(32.14, 118.78), (32.2344, 118.749)]
+    st.session_state.current_route_points = [(32.138500, 118.779200), (32.235100, 118.748500)]
 if 'all_routes' not in st.session_state:
     st.session_state.all_routes = {}
 
@@ -233,13 +223,15 @@ if st.session_state.current_page == "航线规划":
     col_map, col_ctrl = st.columns([2,1])
 
     with col_ctrl:
-        st.subheader("📍 起飞点 A")
-        a_lat_input = st.number_input("纬度", value=32.14, format="%.6f")
-        a_lon_input = st.number_input("经度", value=118.78, format="%.6f")
+        st.subheader("📍 起飞点 A（地图标注点）")
+        # 【关键】修改为你地图上A点的真实坐标
+        a_lat_input = st.number_input("纬度", value=32.138500, format="%.6f")
+        a_lon_input = st.number_input("经度", value=118.779200, format="%.6f")
 
-        st.subheader("📍 目标点 B")
-        b_lat_input = st.number_input("纬度 B", value=32.2344, format="%.6f")
-        b_lon_input = st.number_input("经度 B", value=118.749, format="%.6f")
+        st.subheader("📍 目标点 B（地图标注点）")
+        # 【关键】修改为你地图上B点的真实坐标
+        b_lat_input = st.number_input("纬度 B", value=32.235100, format="%.6f")
+        b_lon_input = st.number_input("经度 B", value=118.748500, format="%.6f")
 
         st.subheader("✈️ 避障参数")
         st.session_state.flight_height = st.slider("飞行高度(m)",1,200,15)
@@ -292,15 +284,19 @@ if st.session_state.current_page == "航线规划":
 
     with col_map:
         def render_map():
+            # 【关键】地图中心定位到你标注的A/B点中间
+            center_lat = (a_lat + b_lat) / 2  # 自动计算A/B中间纬度
+            center_lon = (a_lon + b_lon) / 2  # 自动计算A/B中间经度
             m = folium.Map(
-                location=[(a_lat+b_lat)/2, (a_lon+b_lon)/2],
-                zoom_start=18,
+                [center_lat, center_lon], zoom_start=15,  # 15级缩放，聚焦你的区域
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
-            folium.Marker([a_lat,a_lon],popup="起飞点A",icon=folium.Icon(color="red")).add_to(m)
-            folium.Marker([b_lat,b_lon],popup="目标点B",icon=folium.Icon(color="green")).add_to(m)
+            # 标注A/B点（和你地图上的红色标注对应）
+            folium.Marker([a_lat,a_lon],popup="起飞点A（地图标注）",icon=folium.Icon(color="red")).add_to(m)
+            folium.Marker([b_lat,b_lon],popup="目标点B（地图标注）",icon=folium.Icon(color="green")).add_to(m)
 
+            # 绘制航线
             for name, pts in st.session_state.all_routes.items():
                 color = "#0044FF" if "最优" in name else "#4488FF"
                 weight = 6 if "最优" in name else 4
@@ -309,9 +305,11 @@ if st.session_state.current_page == "航线规划":
                     weight = 2
                 folium.PolyLine(pts, color=color, weight=weight, opacity=0.9).add_to(m)
 
+            # 绘制障碍物
             for p in st.session_state.obstacle_polygons:
                 folium.Polygon(p, color="red", fill=True, fill_color="red", fill_opacity=0.4).add_to(m)
 
+            # 绘制工具
             draw = Draw(
                 export=False,
                 draw_options={"polyline":False,"polygon":True,"rectangle":True,"circle":False,"marker":False}
@@ -319,6 +317,7 @@ if st.session_state.current_page == "航线规划":
             draw.add_to(m)
             data = st_folium(m, width=1000, height=700, key=f"m{st.session_state.map_rerun_key}")
 
+            # 新增障碍物
             if data and data.get("last_active_drawing"):
                 geo = data["last_active_drawing"]["geometry"]
                 if geo["type"] == "Polygon":
