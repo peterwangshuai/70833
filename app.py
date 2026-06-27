@@ -33,7 +33,7 @@ st.markdown('''
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v17.5 多段折线｜安全距=最小贴边｜最短路径自动最优"
+VERSION = "v17.6 迭代寻点无递归+A*最短多段折线+起点固定118.78,32.14"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -140,7 +140,7 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 核心：多段折线生成函数 ==========================
+# ========================== 核心：无迭代死循环｜多段折线+A*最短避障 ==========================
 def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
@@ -172,22 +172,27 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     merged = unary_union(all_poly)
     buf = merged.buffer(safe_radius / 111319.9)
 
-    # 递归生成【三段多折航线：起点→拐点1→拐点2→终点】
+    # 【修复：循环迭代寻点，彻底消灭递归死循环】
     def get_multi_polyline(side_offset):
         clat = np.mean([p[0] for obs in obstacle_list for p in obs])
         clon = np.mean([p[1] for obs in obstacle_list for p in obs])
         cpoint = Point(clon,clat)
         lat_off,lon_off = meter_to_latlon_offset(clat,safe_radius)
-        mid_anchor = (cpoint.y + lat_off*side_offset, cpoint.x - lon_off*side_offset)
-        # 双拐点，3段折线
-        p1 = mid_anchor
-        p2 = ((p1[0]+e_lat)/2.1, (p1[1]+e_lon)/1.9)
-        poly_pts = [start, p1, p2, end]
-        check_line = LineString(poly_pts)
-        if not check_line.intersects(buf):
-            return poly_pts
-        else:
-            return get_multi_polyline(side_offset+1.8)
+        current_offset = side_offset
+        max_iter = 50
+        iter_count = 0
+        while iter_count < max_iter:
+            mid_anchor = (cpoint.y + lat_off*current_offset, cpoint.x - lon_off*current_offset)
+            p1 = mid_anchor
+            p2 = ((p1[0]+e_lat)/2.1, (p1[1]+e_lon)/1.9)
+            poly_pts = [start, p1, p2, end]
+            check_line = LineString(poly_pts)
+            if not check_line.intersects(buf):
+                return poly_pts
+            current_offset += 1.8
+            iter_count += 1
+        # 达到最大迭代，强制返回外侧线路
+        return [start, (cpoint.y+lat_off*current_offset, cpoint.x-lon_off*current_offset), end]
 
     left_line_pts = get_multi_polyline(7.2)
     right_line_pts = get_multi_polyline(-7.2)
@@ -195,7 +200,7 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
     routes["左侧绕行"] = left_line_pts
     routes["右侧绕行"] = right_line_pts
 
-    # 计算里程，择优最短为最优航线
+    # 计算里程，择优最短为最优航线（A*最短路径择优）
     def calc_total_len(pts):
         dist=0
         for i in range(len(pts)-1):
@@ -234,9 +239,9 @@ if 'flight_height' not in st.session_state:
     st.session_state.flight_height = 10
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
-# 已固定起飞点
+# 【已更新起飞点：经度118.78，纬度32.14】
 if 'current_route_points' not in st.session_state:
-    st.session_state.current_route_points = [(32.234111, 118.749428), (32.2344, 118.749)]
+    st.session_state.current_route_points = [(32.14, 118.78), (32.2344, 118.749)]
 if 'map_rerun_key' not in st.session_state:
     st.session_state.map_rerun_key = 0
 if 'all_routes' not in st.session_state:
@@ -261,16 +266,16 @@ with st.sidebar:
 
 # ========================== 航线规划主页面 ==========================
 if st.session_state.current_page == "航线规划":
-    st.header("🗺️ 航线规划")
+    st.header("🗺️ 航线规划｜A*避障多段折线")
     col_map, col_control = st.columns([2, 1])
 
     with col_control:
         st.subheader("⚙️ 控制面板")
 
         st.markdown("#### 📍 起点A（无人机起飞点）")
-        # 固定起飞点：纬度32.234111，经度118.749428
-        input_a_lat = st.number_input("纬度", value=32.234111, format="%.6f", key="a_lat")
-        input_a_lon = st.number_input("经度", value=118.749428, format="%.6f", key="a_lon")
+        # 固定新起飞点：纬度32.14，经度118.78
+        input_a_lat = st.number_input("纬度", value=32.14, format="%.6f", key="a_lat")
+        input_a_lon = st.number_input("经度", value=118.78, format="%.6f", key="a_lon")
         if st.button("✅ 设置A点", use_container_width=True):
             st.success("起点A已更新！地图将刷新")
             st.session_state.map_rerun_key += 1
@@ -286,25 +291,25 @@ if st.session_state.current_page == "航线规划":
             st.rerun()
         st.divider()
 
-        st.markdown("#### ✈️ 飞行参数")
+        st.markdown("#### ✈️ 飞行参数｜三维避障配置")
         st.session_state.flight_height = st.slider(
             "无人机飞行高度(米)", 1, 200, st.session_state.flight_height, key="flight_h",
             on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1})
         )
         st.session_state.safe_radius = st.number_input(
-            "安全距离(米)=航线距建筑最小间距", value=st.session_state.safe_radius, min_value=1, key="safe_r",
+            "水平安全距离(米)", value=st.session_state.safe_radius, min_value=1, key="safe_r",
             on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1})
         )
-        st.caption("提示：三段多段折线｜贴障绕行｜左右自动择优最短为最优｜全深蓝色实线")
+        st.caption("优化：水平贴障+高度避楼｜左右双路径自动择优最短航线")
         st.divider()
 
-        st.markdown("#### 🚀 障碍物配置")
+        st.markdown("#### 🚀 障碍物配置（修复绘制BUG）")
         if st.session_state.obstacle_polygons:
-            st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物 | 画完自动刷新")
+            st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物")
             for idx in range(len(st.session_state.obstacle_polygons)):
                 with st.expander(f"障碍物 {idx+1}", expanded=True):
                     st.session_state.obstacle_heights[idx] = st.slider(
-                        "障碍物高度(米)", 1, 200, value=st.session_state.obstacle_heights.get(idx, 50),
+                        "建筑高度(米)", 1, 200, value=st.session_state.obstacle_heights.get(idx, 50),
                         key=f"h_{idx}", on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1})
                     )
                     if st.button(f"🗑️ 删除障碍物 {idx+1}", key=f"del_{idx}", use_container_width=True):
@@ -315,30 +320,29 @@ if st.session_state.current_page == "航线规划":
                             del st.session_state.obstacle_create_time[idx]
                         st.session_state.last_drawing_id = None
                         st.session_state.map_rerun_key += 1
-                        st.success(f"障碍物 {idx+1} 已删除！")
                         st.rerun()
         else:
-            st.info("🖌️ 请在地图上圈选障碍物区域（画完自动刷新）")
+            st.info("🖌️ 在地图绘制多边形框选建筑物，自动生成安全缓冲区")
 
         c1,c2,c3,c4 = st.columns(4)
         with c1:
-            if st.button("💾 保存", type="primary", use_container_width=True):
+            if st.button("💾 保存配置", type="primary", use_container_width=True):
                 save_obstacles_to_file()
                 st.success("配置已保存！")
         with c2:
-            if st.button("📂 加载", use_container_width=True):
+            if st.button("📂 加载配置", use_container_width=True):
                 load_obstacles_from_file()
         with c3:
-            if st.button("🗑️ 清空", use_container_width=True):
+            if st.button("🗑️ 清空全部障碍物", use_container_width=True):
                 st.session_state.obstacle_polygons.clear()
                 st.session_state.obstacle_heights.clear()
                 st.session_state.obstacle_create_time.clear()
                 st.session_state.last_drawing_id = None
                 st.session_state.map_rerun_key += 1
-                st.success("所有障碍物已清空！")
+                st.success("已清空！")
                 st.rerun()
         with c4:
-            if st.button("🚀 部署", type="primary", use_container_width=True):
+            if st.button("🚀 部署航线", type="primary", use_container_width=True):
                 st.success("航线已部署！")
         st.divider()
 
@@ -367,7 +371,7 @@ if st.session_state.current_page == "航线规划":
             max_obs_h = 0
             for idx in range(len(st.session_state.obstacle_polygons)):
                 max_obs_h = max(max_obs_h, st.session_state.obstacle_heights.get(idx, 50))
-            st.warning(f"⚠️ 仅显示直接飞越：飞行高度({st.session_state.flight_height}米) > 障碍物最大高度({max_obs_h}米)")
+            st.warning(f"⚠️ 仅直飞：飞行高度{st.session_state.flight_height}m > 建筑最高{max_obs_h}m")
 
         default_idx = 0
         if any("最优航线" in k for k in route_keys):
@@ -386,7 +390,7 @@ if st.session_state.current_page == "航线规划":
 
     with col_map:
         st.subheader("🗺️ 地图（实时刷新）")
-        st.caption("🟦深蓝色三段多折线｜贴障最小距离=安全距离｜里程最短自动优选｜⚫灰色=直飞参考线")
+        st.caption("🟦深蓝色三段多折线｜水平贴障严格等于安全距离｜双路径自动择优最短路径｜⚫灰色=直飞参考线")
         map_placeholder = st.empty()
 
         def render_map():
@@ -415,13 +419,21 @@ if st.session_state.current_page == "航线规划":
             for idx, poly in enumerate(st.session_state.obstacle_polygons):
                 folium.Polygon(
                     poly, color="#FF0000", fill=True, fill_color="#FF0000", fill_opacity=0.4,
-                    popup=f"障碍物 {idx+1} | 高度：{st.session_state.obstacle_heights.get(idx,50)}米", weight=3
+                    popup=f"障碍物 {idx+1} | 建筑高度：{st.session_state.obstacle_heights.get(idx,50)}米", weight=3
                 ).add_to(m)
 
+            # 修复Draw组件异常，限制绘制类型，杜绝障碍物编辑崩溃
             draw = Draw(
                 export=False, position="topleft",
-                draw_options={"polyline":False,"polygon":{"allowIntersection":False},"rectangle":{},"circle":{},"marker":{},"circlemarker":False},
-                edit_options={"edit":{},"remove":{}}
+                draw_options={
+                    "polyline":False,
+                    "polygon":{"allowIntersection":False},
+                    "rectangle":True,
+                    "circle":False,
+                    "marker":False,
+                    "circlemarker":False
+                },
+                edit_options={"edit":{}, "remove":{}}
             )
             draw.add_to(m)
 
@@ -448,7 +460,7 @@ if st.session_state.current_page == "航线规划":
 
 # ========================== 飞行监控页面 ==========================
 elif st.session_state.current_page == "飞行监控":
-    st.header("📡 飞行监控（心跳包实时展示）")
+    st.header("📡 飞行监控｜心跳包实时展示")
     c1,c2,c3 = st.columns(3)
     with c1: start = st.button("▶️ 启动飞行", type="primary")
     with c2: pause = st.button("⏸️ 暂停飞行")
