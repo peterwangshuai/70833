@@ -8,8 +8,10 @@ from streamlit_folium import st_folium
 from folium.plugins import Draw
 import os
 import json
+import networkx as nx
 from shapely.geometry import LineString, Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
+from shapely import buffer
 
 # ========================== 全局配置：汉化CSS ==========================
 st.set_page_config(page_title="无人机航线规划系统", layout="wide")
@@ -33,7 +35,7 @@ st.markdown('''
 # ========================== 基础全局参数 ==========================
 CONFIG_DIR = r"D:\wrj\3Dwrj"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
-VERSION = "v17.1 按图纸绕行：左西空地/右东马路"
+VERSION = "v18.0 可视图Dijkstra全局最优避障版"
 DEFAULT_SAFE_RADIUS = 5
 
 # ========================== 坐标系转换 ==========================
@@ -78,8 +80,7 @@ def latlon_to_meter(lat1, lon1, lat2, lon2):
     R = 6371000
     dLat = np.radians(lat2 - lat1)
     dLon = np.radians(lon2 - lon1)
-    a = np.sin(dLat/2) * np.sin(dLat/2) + np.cos(np.radians(lat1)) \
-        * np.cos(np.radians(lat2)) * np.sin(dLon/2) * np.sin(dLon/2)
+    a = np.sin(dLat/2) * np.sin(dLat/2) + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dLon/2) * np.sin(dLon/2)
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
@@ -87,6 +88,28 @@ def meter_to_latlon_offset(lat, meter):
     lat_offset = meter / 111319.9
     lon_offset = meter / (111319.9 * np.cos(np.radians(lat)))
     return lat_offset, lon_offset
+
+# 计算整条航线总里程
+def calc_route_length(pts):
+    dist = 0.0
+    for i in range(len(pts)-1):
+        lat1, lon1 = pts[i]
+        lat2, lon2 = pts[i+1]
+        dist += latlon_to_meter(lat1, lon1, lat2, lon2)
+    return round(dist, 2)
+
+# 二阶贝塞尔平滑曲线
+def smooth_curve(points, seg_num=18):
+    smooth_pts = []
+    for i in range(len(points)-1):
+        p0 = np.array(points[i])
+        p1 = np.array(points[i+1])
+        mid = (p0 + p1) / 2
+        for t in np.linspace(0, 1, seg_num):
+            lat = (1-t)**2 * p0[0] + 2*(1-t)*t * mid[0] + t**2 * p1[0]
+            lon = (1-t)**2 * p0[1] + 2*(1-t)*t * mid[1] + t**2 * p1[1]
+            smooth_pts.append((round(lat,6), round(lon,6)))
+    return smooth_pts
 
 # ========================== 障碍物配置持久化 ==========================
 def ensure_config_dir():
@@ -140,95 +163,109 @@ def load_obstacles_from_file():
         st.error(f"加载失败：{str(e)}")
         return None
 
-# ========================== 核心：按图纸定制绕行算法（左西空地、右东马路+全平滑） ==========================
+# ========================== 新增：可视图核心工具函数 ==========================
+def point_latlon_to_xy(pt):
+    """(lat,lon)转shapely Point(x=lon,y=lat)"""
+    return Point(pt[1], pt[0])
+
+def is_line_safe(p1, p2, safe_obstacle_union):
+    """两点连线不与安全缓冲区相交=可视"""
+    line = LineString([point_latlon_to_xy(p1), point_latlon_to_xy(p2)])
+    return not line.intersects(safe_obstacle_union)
+
+def build_visibility_shortest_path(start, end, safe_obs_union):
+    """构建可视图 + Dijkstra求解全局最短无碰撞路径"""
+    # 提取所有障碍物顶点
+    verts = [start, end]
+    if isinstance(safe_obs_union, MultiPolygon):
+        polys = list(safe_obs_union.geoms)
+    else:
+        polys = [safe_obs_union]
+    for poly in polys:
+        coords = list(poly.exterior.coords)[:-1]
+        for (x, y) in coords:
+            verts.append((y, x)) # xy转latlon
+    # 构建图
+    G = nx.Graph()
+    node_idx = {}
+    for i, v in enumerate(verts):
+        node_idx[v] = i
+        G.add_node(i, pos=v)
+    # 遍历所有点对，建立可视边
+    n = len(verts)
+    for i in range(n):
+        p_i = verts[i]
+        for j in range(i+1, n):
+            p_j = verts[j]
+            if is_line_safe(p_i, p_j, safe_obs_union):
+                dist = latlon_to_meter(p_i[0], p_i[1], p_j[0], p_j[1])
+                G.add_edge(node_idx[p_i], node_idx[p_j], weight=dist)
+    # Dijkstra求起点到终点最短路径
+    start_id = node_idx[start]
+    end_id = node_idx[end]
+    try:
+        path_ids = nx.dijkstra_path(G, start_id, end_id, weight="weight")
+        raw_path = [verts[pid] for pid in path_ids]
+        return smooth_curve(raw_path, seg_num=18)
+    except nx.NetworkXNoPath:
+        # 无通路兜底
+        mid = ((start[0]+end[0])/2, (start[1]+end[1])/2)
+        return smooth_curve([start, mid, end])
+
+# ========================== 核心规划函数：多算法对比输出 ==========================
 def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, safe_radius):
     routes = {}
     s_lat, s_lon = start
     e_lat, e_lon = end
-
-    # 二阶贝塞尔平滑函数
-    def smooth_curve(p0, pm, p1, seg_num=22):
-        curve_pts = []
-        for t in np.linspace(0, 1, seg_num):
-            lat = (1-t)**2 * p0[0] + 2*(1-t)*t * pm[0] + t**2 * p1[0]
-            lon = (1-t)**2 * p0[1] + 2*(1-t)*t * pm[1] + t**2 * p1[1]
-            curve_pts.append((lat, lon))
-        return curve_pts
-
-    # 直接飞越平滑弧线
+    # 1. 直飞参考线
     mid_point = ((start[0]+end[0])/2, (start[1]+end[1])/2)
-    routes["直接飞越"] = smooth_curve(start, mid_point, end, seg_num=12)
-
-    # 统计障碍物最大高度
-    max_obs_height = 0
-    for idx in range(len(obstacle_list)):
-        current_height = obstacle_heights.get(idx, 50)
-        if current_height > max_obs_height:
-            max_obs_height = current_height
-
-    # 飞行高度大于障碍物只保留直飞
-    if fly_height > max_obs_height or not obstacle_list:
+    routes["方案1：直接飞越航线"] = smooth_curve([start, mid_point, end], seg_num=12)
+    # 无障碍物直接返回直飞
+    if not obstacle_list:
+        routes["综合最优航线"] = routes["方案1：直接飞越航线"]
         return routes
-
-    # 障碍物合并
-    all_polygons = []
-    for obs_coords in obstacle_list:
-        all_polygons.append(Polygon(obs_coords))
-    merged_obs = unary_union(all_polygons)
+    # 最大障碍物高度
+    max_obs_height = max([obstacle_heights.get(i,50) for i in range(len(obstacle_list))])
+    # 障碍物多边形合并
+    raw_polys = []
+    for coords in obstacle_list:
+        raw_polys.append(Polygon([(lon,lat) for lat,lon in coords]))
+    merged_raw = unary_union(raw_polys)
+    # 生成安全缓冲区（所有航线必须远离该区域）
     center_lat = np.mean([p[0] for obs in obstacle_list for p in obs])
-    center_lon = np.mean([p[1] for obs in obstacle_list for p in obs])
-    center_point = Point(center_lon, center_lat)
-
+    buf_deg = max(meter_to_latlon_offset(center_lat, safe_radius))
+    safe_obstacle = merged_raw.buffer(buf_deg, join_style="round", quad_segs=6)
+    # 高度足够：飞越最优
+    if fly_height > max_obs_height:
+        routes["综合最优航线"] = routes["方案1：直接飞越航线"]
+        return routes
+    # 2. 可视图全局最短绕行（标准最优方案）
+    vis_short = build_visibility_shortest_path(start, end, safe_obstacle)
+    routes["方案2：可视图全局最短绕行(理论最优)"] = vis_short
+    # 3. 旧版偏移绕行（对比用）
+    center_point = Point(np.mean([p[1] for obs in obstacle_list for p in obs]), np.mean([p[0] for obs in obstacle_list for p in obs]))
     lat_off, lon_off = meter_to_latlon_offset(center_lat, safe_radius)
-    safe_buffer = merged_obs.buffer(safe_radius / 111319.9)
-
-    # 图纸定制：锚点大幅外扩，左绕西侧空地、右绕东侧马路
     offset_scale = 9.2
-    left_ok = False
-    right_ok = False
-    left_waypoint = None
-    right_waypoint = None
-    max_try = 28
-    step_add = 3.5
-
-    for attempt in range(max_try):
-        # 左侧：建筑群西侧空旷区域（匹配示例蓝线左绕）
-        left_waypoint = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
-        # 右侧：建筑群东侧马路
-        right_waypoint = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale)
-        left_line = LineString([start, left_waypoint, end])
-        right_line = LineString([start, right_waypoint, end])
-
-        if not left_line.intersects(safe_buffer):
-            left_ok = True
-        if not right_line.intersects(safe_buffer):
-            right_ok = True
-        if left_ok and right_ok:
-            break
-        offset_scale += step_add
-
-    # 生成平滑绕行曲线
-    if left_ok:
-        routes["左侧绕行"] = smooth_curve(start, left_waypoint, end, seg_num=22)
-    if right_ok:
-        routes["右侧绕行"] = smooth_curve(start, right_waypoint, end, seg_num=22)
-
-    # 最优航线筛选（自动选最短，优先匹配示例蓝色虚线走线）
+    left_way = (center_point.y + lat_off * offset_scale, center_point.x - lon_off * offset_scale)
+    right_way = (center_point.y - lat_off * offset_scale, center_point.x + lon_off * offset_scale)
+    routes["方案3：左侧固定偏移绕行"] = smooth_curve([start, left_way, end])
+    routes["方案3：右侧固定偏移绕行"] = smooth_curve([start, right_way, end])
+    # 对比所有平面绕行里程，选出综合最优
+    plane_candidates = [
+        ("方案2：可视图全局最短绕行(理论最优)", routes["方案2：可视图全局最短绕行(理论最优)"]),
+        ("方案3：左侧固定偏移绕行", routes["方案3：左侧固定偏移绕行"]),
+        ("方案3：右侧固定偏移绕行", routes["方案3：右侧固定偏移绕行"])
+    ]
     min_dist = float("inf")
-    best_route = None
     best_name = ""
-    for name, pts in routes.items():
-        if name in ("左侧绕行", "右侧绕行"):
-            dist = 0
-            for i in range(len(pts)-1):
-                dist += latlon_to_meter(pts[i][0],pts[i][1],pts[i+1][0],pts[i+1][1])
-            if dist < min_dist:
-                min_dist = dist
-                best_route = pts
-                best_name = name
-    if best_route is not None:
-        routes[f"最优航线（{best_name}）"] = best_route
-
+    best_path = None
+    for name, pts in plane_candidates:
+        d = calc_route_length(pts)
+        if d < min_dist:
+            min_dist = d
+            best_name = name
+            best_path = pts
+    routes[f"综合最优航线({best_name})"] = best_path
     return routes
 
 # ========================== 全局状态初始化 ==========================
@@ -266,11 +303,9 @@ with st.sidebar:
     st.subheader("🧭 导航")
     st.session_state.current_page = st.radio("", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
     st.divider()
-    
     st.subheader("⚙️ 坐标系设置")
     st.session_state.input_coord_system = st.radio("", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
     st.divider()
-    
     st.subheader("📊 系统状态")
     st.success("✅ 起点A已设置")
     st.success("✅ 终点B已设置")
@@ -280,12 +315,10 @@ with st.sidebar:
 
 # ========================== 航线规划主页面 ==========================
 if st.session_state.current_page == "航线规划":
-    st.header("🗺️ 航线规划")
+    st.header("🗺️ 航线规划 | 多算法对比择优")
     col_map, col_control = st.columns([2, 1])
-
     with col_control:
         st.subheader("⚙️ 控制面板")
-        
         st.markdown("#### 📍 起点A")
         input_a_lat = st.number_input("纬度", value=32.2323, format="%.4f", key="a_lat")
         input_a_lon = st.number_input("经度", value=118.749, format="%.3f", key="a_lon")
@@ -294,7 +327,6 @@ if st.session_state.current_page == "航线规划":
             st.session_state.map_rerun_key += 1
             st.rerun()
         st.divider()
-
         st.markdown("#### 📍 终点B")
         input_b_lat = st.number_input("纬度 ", value=32.2344, format="%.4f", key="b_lat")
         input_b_lon = st.number_input("经度 ", value=118.749, format="%.3f", key="b_lon")
@@ -303,7 +335,6 @@ if st.session_state.current_page == "航线规划":
             st.session_state.map_rerun_key += 1
             st.rerun()
         st.divider()
-
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.slider(
             "无人机飞行高度(米)", 1, 200, st.session_state.flight_height, key="flight_h",
@@ -313,9 +344,8 @@ if st.session_state.current_page == "航线规划":
             "安全距离(米)", value=st.session_state.safe_radius, min_value=1, key="safe_r",
             on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1})
         )
-        st.caption("提示：飞行高度 ≤ 障碍物高度 显示左右绕行 | 最优默认沿西侧空地(图纸蓝线)")
+        st.caption("提示：飞行高度≤障碍物高度自动对比3种平面绕行，选出全局最短")
         st.divider()
-
         st.markdown("#### 🚀 障碍物配置")
         if st.session_state.obstacle_polygons:
             st.caption(f"已配置 {len(st.session_state.obstacle_polygons)} 个障碍物 | 画完自动刷新")
@@ -337,7 +367,6 @@ if st.session_state.current_page == "航线规划":
                         st.rerun()
         else:
             st.info("🖌️ 请在地图上圈选障碍物区域（画完自动刷新）")
-
         c1,c2,c3,c4 = st.columns(4)
         with c1:
             if st.button("💾 保存", type="primary", use_container_width=True):
@@ -359,17 +388,16 @@ if st.session_state.current_page == "航线规划":
             if st.button("🚀 部署", type="primary", use_container_width=True):
                 st.success("航线已部署！")
         st.divider()
-
+        # 坐标转换
         if st.session_state.input_coord_system == "WGS-84":
             a_lat,a_lon = wgs84_to_gcj02(input_a_lat,input_a_lon)
             b_lat,b_lon = wgs84_to_gcj02(input_b_lat,input_b_lon)
         else:
             a_lat,a_lon = input_a_lat,input_a_lon
             b_lat,b_lon = input_b_lat,input_b_lon
-
         start_pt = (a_lat,a_lon)
         end_pt = (b_lat,b_lon)
-
+        # 执行多算法路径规划
         st.session_state.all_routes = generate_routes(
             start_pt, end_pt,
             st.session_state.obstacle_polygons,
@@ -377,36 +405,22 @@ if st.session_state.current_page == "航线规划":
             st.session_state.flight_height,
             st.session_state.safe_radius
         )
-
+        # 展示各方案里程对比
+        st.markdown("#### 📏 各方案里程对比")
+        for name, pts in st.session_state.all_routes.items():
+            st.write(f"{name}：{calc_route_length(pts)} m")
+        # 航线选择
         st.markdown("#### 🧭 航线选择")
         route_keys = list(st.session_state.all_routes.keys())
-        
-        if len(route_keys) == 1:
-            max_obs_h = 0
-            for idx in range(len(st.session_state.obstacle_polygons)):
-                max_obs_h = max(max_obs_h, st.session_state.obstacle_heights.get(idx, 50))
-            st.warning(f"⚠️ 仅显示直接飞越：飞行高度({st.session_state.flight_height}米) > 障碍物最大高度({max_obs_h}米)")
-        
-        default_idx = 0
-        if any("最优航线" in k for k in route_keys):
-            best_key = [k for k in route_keys if "最优航线" in k][0]
-            default_idx = route_keys.index(best_key)
-        elif "左侧绕行" in route_keys:
-            default_idx = route_keys.index("左侧绕行")
-        elif "右侧绕行" in route_keys:
-            default_idx = route_keys.index("右侧绕行")
-
-        selected_route = st.radio(
-            "当前激活航线", route_keys, index=default_idx, key="route_sel",
-            on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1})
-        )
+        default_idx = route_keys.index([k for k in route_keys if "综合最优航线" in k][0])
+        selected_route = st.radio("当前激活航线", route_keys, index=default_idx, key="route_sel",
+            on_change=lambda: st.session_state.update({"map_rerun_key": st.session_state.map_rerun_key + 1}))
         st.session_state.current_route_points = st.session_state.all_routes[selected_route]
-
+    # 地图渲染区域
     with col_map:
-        st.subheader("🗺️ 地图（实时刷新）")
-        st.caption("🟥 左侧绕行(西侧空地·红平滑曲线) | 🟧 右侧绕行(东侧马路·橙平滑曲线) | 🟦 最优航线(蓝加粗·匹配图纸蓝虚线) | ⚫直接飞越(灰曲线)")
+        st.subheader("🗺️ 地图")
+        st.caption("⚫直飞越障 | 🟦可视图全局最优 | 🟥左偏移 | 🟧右偏移 | 加粗蓝=综合最优")
         map_placeholder = st.empty()
-
         def render_map():
             center_lat = (a_lat + b_lat) / 2
             center_lon = (a_lon + b_lon) / 2
@@ -415,35 +429,42 @@ if st.session_state.current_page == "航线规划":
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri卫星地图"
             )
+            # 起止标记
             folium.Marker([a_lat, a_lon], popup="起点A", icon=folium.Icon(color="red", icon="flag")).add_to(m)
             folium.Marker([b_lat, b_lon], popup="终点B", icon=folium.Icon(color="green", icon="flag")).add_to(m)
-
-            if "左侧绕行" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["左侧绕行"], color="#FF0000", weight=5, opacity=0.8, popup="左侧绕行·西侧空地").add_to(m)
-            if "右侧绕行" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["右侧绕行"], color="#FFA500", weight=5, opacity=0.8, popup="右侧绕行·东侧马路").add_to(m)
-            if any("最优航线" in k for k in st.session_state.all_routes.keys()):
-                best_route_key = [k for k in st.session_state.all_routes.keys() if "最优航线" in k][0]
-                folium.PolyLine(st.session_state.all_routes[best_route_key], color="#0000FF", weight=7, opacity=1.0, popup=best_route_key).add_to(m)
-            if "直接飞越" in st.session_state.all_routes:
-                folium.PolyLine(st.session_state.all_routes["直接飞越"], color="#808080", weight=3, opacity=0.5, popup="直接飞越平滑曲线").add_to(m)
-
+            # 绘制障碍物本体
             for idx, poly in enumerate(st.session_state.obstacle_polygons):
                 folium.Polygon(
-                    poly, color="#FF0000", fill=True, fill_color="#FF0000", fill_opacity=0.4,
-                    popup=f"障碍物 {idx+1} | 高度：{st.session_state.obstacle_heights.get(idx,50)}米", weight=3
+                    poly, color="#FF0000", fill=True, fill_color="#FF0000", fill_opacity=0.4, weight=3,
+                    popup=f"障碍物 {idx+1} | 高度：{st.session_state.obstacle_heights.get(idx,50)}米"
                 ).add_to(m)
-
+            # 航线配色规则
+            style_map = {
+                "方案1：直接飞越航线": {"color":"#333333", "weight":3, "opacity":0.6},
+                "方案2：可视图全局最短绕行(理论最优)": {"color":"#0066FF", "weight":4, "opacity":0.8},
+                "方案3：左侧固定偏移绕行": {"color":"#FF2222", "weight":4, "opacity":0.8},
+                "方案3：右侧固定偏移绕行": {"color":"#FF9922", "weight":4, "opacity":0.8},
+            }
+            # 绘制所有备选航线
+            for name, pts in st.session_state.all_routes.items():
+                if "综合最优航线" not in name:
+                    s = style_map[name]
+                    folium.PolyLine(pts, popup=f"{name} 里程:{calc_route_length(pts)}m",** s).add_to(m)
+            # 综合最优加粗高亮
+            best_key = [k for k in list(st.session_state.all_routes.keys()) if "综合最优航线" in k][0]
+            best_pts = st.session_state.all_routes[best_key]
+            folium.PolyLine(best_pts, color="#0033FF", weight=7, opacity=1, popup=f"【综合最优】{best_key}").add_to(m)
+            # 绘图工具
             draw = Draw(
                 export=False, position="topleft",
                 draw_options={"polyline":False,"polygon":{"allowIntersection":False},"rectangle":{},"circle":{},"marker":{},"circlemarker":False},
                 edit_options={"edit":{},"remove":{}}
             )
             draw.add_to(m)
-
+            # 渲染地图
             with map_placeholder:
                 map_data = st_folium(m, width=1000, height=700, returned_objects=["last_active_drawing"], key=f"map_{st.session_state.map_rerun_key}")
-
+            # 新增障碍物逻辑
             if map_data and map_data.get("last_active_drawing"):
                 draw_id = str(map_data["last_active_drawing"]["geometry"]["coordinates"])
                 if draw_id != st.session_state.last_drawing_id:
@@ -461,7 +482,6 @@ if st.session_state.current_page == "航线规划":
                             st.success(f"✅ 障碍物{new_id+1}添加完成，默认高度50m")
                             st.rerun()
         render_map()
-
 # ========================== 飞行监控页面 ==========================
 elif st.session_state.current_page == "飞行监控":
     st.header("📡 飞行监控（心跳包实时展示）")
@@ -469,18 +489,15 @@ elif st.session_state.current_page == "飞行监控":
     with c1: start = st.button("▶️ 启动飞行", type="primary")
     with c2: pause = st.button("⏸️ 暂停飞行")
     with c3: reset = st.button("🔄 重置数据")
-
     if start: st.session_state.is_running = True
     if pause: st.session_state.is_running = False
     if reset:
         st.session_state.df_history = pd.DataFrame(columns=["时间","序号"])
         st.session_state.is_running = False
         st.rerun()
-
     status = st.empty()
     chart_area = st.empty()
     list_area = st.empty()
-
     while st.session_state.is_running:
         now_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         seq = len(st.session_state.df_history)+1
@@ -491,7 +508,6 @@ elif st.session_state.current_page == "飞行监控":
         status.success(f"✅ 飞行运行正常 | 心跳序号：{seq}")
         st.session_state.last_received = time.time()
         time.sleep(1)
-
     if st.session_state.last_received and not st.session_state.is_running:
         elapsed = time.time() - st.session_state.last_received
         if elapsed > 3 and len(st.session_state.df_history) > 0:
