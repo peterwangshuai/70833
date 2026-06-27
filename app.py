@@ -133,15 +133,11 @@ def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, saf
 
     # 核心改进：局部寻路（只在起点-终点的包围盒内找拐点）
     def get_local_route(side):
-        min_lat = min(s_lat, e_lat) - 0.0005
-        min_lat = min(s_lat, e_lat) + 0.0005
-        min_lon = min(s_lon, e_lon) - 0.0005
-        max_lon = max(s_lon, e_lon) + 0.0005
         # 1. 计算起点-终点的局部包围盒（只在这个范围内找拐点）
-        # 1. 缩小局部包围盒范围（比如从0.001→0.0005，约50米）
-# 2. 进一步加密采样步长（步长从2→1，极致贴近）
-path_pts = local_pts[:half:1]  # 左侧
-path_pts = local_pts[half::1]  # 右侧
+        min_lat = min(s_lat, e_lat) - 0.001  # 约100米范围
+        max_lat = max(s_lat, e_lat) + 0.001
+        min_lon = min(s_lon, e_lon) - 0.001
+        max_lon = max(s_lon, e_lon) + 0.001
         
         # 2. 提取缓冲区边界点，只保留包围盒内的点
         boundary_coords = list(buf.boundary.coords)
