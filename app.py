@@ -8,7 +8,6 @@ from streamlit_folium import st_folium
 from folium.plugins import Draw
 import os
 import json
-import networkx as nx
 from shapely.geometry import LineString, Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
 from shapely import buffer
@@ -174,9 +173,7 @@ def is_line_safe(p1, p2, safe_obstacle_union):
     return not line.intersects(safe_obstacle_union)
 
 def build_visibility_shortest_path(start, end, safe_obs_union):
-    """构建可视图 + Dijkstra求解全局最短无碰撞路径"""
-    # 提取所有障碍物顶点
-    verts = [start, end]
+    verts = []
     if isinstance(safe_obs_union, MultiPolygon):
         polys = list(safe_obs_union.geoms)
     else:
@@ -184,34 +181,26 @@ def build_visibility_shortest_path(start, end, safe_obs_union):
     for poly in polys:
         coords = list(poly.exterior.coords)[:-1]
         for (x, y) in coords:
-            verts.append((y, x)) # xy转latlon
-    # 构建图
-    G = nx.Graph()
-    node_idx = {}
-    for i, v in enumerate(verts):
-        node_idx[v] = i
-        G.add_node(i, pos=v)
-    # 遍历所有点对，建立可视边
-    n = len(verts)
-    for i in range(n):
-        p_i = verts[i]
-        for j in range(i+1, n):
-            p_j = verts[j]
-            if is_line_safe(p_i, p_j, safe_obs_union):
-                dist = latlon_to_meter(p_i[0], p_i[1], p_j[0], p_j[1])
-                G.add_edge(node_idx[p_i], node_idx[p_j], weight=dist)
-    # Dijkstra求起点到终点最短路径
-    start_id = node_idx[start]
-    end_id = node_idx[end]
-    try:
-        path_ids = nx.dijkstra_path(G, start_id, end_id, weight="weight")
-        raw_path = [verts[pid] for pid in path_ids]
-        return smooth_curve(raw_path, seg_num=18)
-    except nx.NetworkXNoPath:
-        # 无通路兜底
-        mid = ((start[0]+end[0])/2, (start[1]+end[1])/2)
-        return smooth_curve([start, mid, end])
-
+            verts.append((y, x))
+    current = start
+    path = [current]
+    target = end
+    while True:
+        best_pt = target
+        min_dist = latlon_to_meter(current[0], current[1], target[0], target[1])
+        for p in verts:
+            line = LineString([Point(current[1], current[0]), Point(p[1], p[0])])
+            if not line.intersects(safe_obs_union):
+                d = latlon_to_meter(current[0], current[1], p[0], p[1])
+                if d < min_dist:
+                    min_dist = d
+                    best_pt = p
+        if best_pt == target:
+            break
+        path.append(best_pt)
+        current = best_pt
+    path.append(target)
+    return smooth_curve(path)
 # ========================== 核心规划函数：多算法对比输出 ==========================
 def generate_routes(start, end, obstacle_list, obstacle_heights, fly_height, safe_radius):
     routes = {}
