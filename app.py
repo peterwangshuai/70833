@@ -31,12 +31,11 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
-# ========================== 基础全局参数 ==========================
-CONFIG_DIR = r"D:\\wrj\\3Dwrj"
+# ========================== 基础全局参数（修改路径） ==========================
+CONFIG_DIR = r"D:\17166\Documents\作业"          # <--- 新路径
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
 VERSION = "v18.0 可视图Dijkstra全局最优避障版"
 DEFAULT_SAFE_RADIUS = 5
-
 # ========================== 坐标系转换 ==========================
 def wgs84_to_gcj02(lat, lon):
     a = 6378245.0
