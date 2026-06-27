@@ -274,9 +274,12 @@ if st.session_state.current_page == "航线规划":
     with col_map:
         map_placeholder = st.empty()
         def render_map():
-            m = folium.Map(location=[(a_lat+b_lat)/2,(a_lon+b_lon)/2], zoom_start=17,
-                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-attr='Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+           m = folium.Map(
+    location=[(a_lat+b_lat)/2,(a_lon+b_lon)/2],
+    zoom_start=17,
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr='Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+)
             folium.Marker([a_lat,a_lon],icon=folium.Icon(color="red")).add_to(m)
             folium.Marker([b_lat,b_lon],icon=folium.Icon(color="green")).add_to(m)
 
