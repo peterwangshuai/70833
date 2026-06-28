@@ -540,81 +540,77 @@ elif st.session_state.current_page == "飞行监控":
             'heartbeat_seq': 0, 'last_update': None
         }
 
-    # ---------- 预留函数接口（已实现） ----------
-    def mavlink_data_receive(queue_obj, stop_event):
-        """
-        持续监听 UDP 端口 14550，接收 MAVLink 数据包。
-        使用 pymavlink 库连接 SITL。
-        """
-        try:
-            # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）[reference:0][reference:1]
-            master = mavutil.mavlink_connection(
-                'udpin:0.0.0.0:14550',   
-                dialect='ardupilotmega'  # ArduPilot 用 ardupilotmega，PX4 用 'common'
-            )
+def mavlink_data_receive(queue_obj, stop_event):
+    """
+    持续监听 UDP 端口 14550，接收 MAVLink 数据包。
+    使用 pymavlink 库连接 SITL。
+    """
+    try:
+        # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）
+        master = mavutil.mavlink_connection(
+            'udpin:0.0.0.0:14550',      # ✅ 正确格式
+            dialect='ardupilotmega'      # ✅ ArduPilot 用 ardupilotmega，PX4 用 'common'
+        )
 
-            # 等待心跳包，确认飞控已连接[reference:2][reference:3]
-            print("⏳ 等待 SITL 心跳包...")
-            master.wait_heartbeat(timeout=10)
-            print(f"✅ 已连接 — system {master.target_system}, component {master.target_component}")
+        # 等待心跳包，确认飞控已连接
+        print("⏳ 等待 SITL 心跳包...")
+        master.wait_heartbeat(timeout=10)   # ✅ 正确函数名
+        print(f"✅ 已连接 — system {master.target_system}, component {master.target_component}")
 
-            # 要接收的消息类型[reference:4]
-            TARGETS = ['GLOBAL_POSITION_INT', 'ATTITUDE', 'SYS_STATUS']
+        # 要接收的消息类型
+        TARGETS = ['GLOBAL_POSITION_INT', 'ATTITUDE', 'SYS_STATUS']
 
-            while not stop_event.is_set():
-                try:
-                    # 阻塞接收，超时 0.5 秒[reference:5]
-                    msg = master.recv_match(type=TARGETS, blocking=True, timeout=0.5)
-                    if msg is None:
-                        continue
-
-                    msg_type = msg.get_type()
-                    parsed = {'type': msg_type, 'timestamp': time.time()}
-
-                    # ----- 解析 GLOBAL_POSITION_INT（位置信息） -----
-                    if msg_type == 'GLOBAL_POSITION_INT':
-                        # lat/lon: 1e-7 度 → 十进制度[reference:6][reference:7]
-                        parsed['lat'] = msg.lat / 1e7
-                        parsed['lon'] = msg.lon / 1e7
-                        parsed['alt'] = msg.alt / 1000       # mm → m (MSL)
-                        parsed['rel_alt'] = msg.relative_alt / 1000  # mm → m (相对起飞点)
-                        parsed['hdg'] = msg.hdg / 100        # 0.01° → °
-
-                    # ----- 解析 ATTITUDE（姿态信息） -----
-                    elif msg_type == 'ATTITUDE':
-                        # 弧度 → 度[reference:8]
-                        parsed['roll'] = math.degrees(msg.roll)
-                        parsed['pitch'] = math.degrees(msg.pitch)
-                        parsed['yaw'] = math.degrees(msg.yaw)
-
-                    # ----- 解析 SYS_STATUS（电池/系统状态） -----
-                    elif msg_type == 'SYS_STATUS':
-                        parsed['voltage'] = msg.voltage_battery / 1000   # mV → V[reference:9]
-                        parsed['current'] = msg.current_battery / 100    # cA → A
-                        parsed['battery'] = msg.battery_remaining        # % (-1 表示未知)
-
-                    # 放入队列（非阻塞，队列满则丢弃旧数据）
-                    try:
-                        queue_obj.put_nowait(parsed)
-                    except queue.Full:
-                        # 队列满了就扔掉最旧的一条，再放新的
-                        try:
-                            queue_obj.get_nowait()
-                        except queue.Empty:
-                            pass
-                        queue_obj.put_nowait(parsed)
-
-                except Exception as e:
-                    print(f"⚠️ 接收消息异常: {e}")
-                    time.sleep(0.1)
-
-        except Exception as e:
-            print(f"❌ MAVLink 连接失败: {e}")
-            # 放一条错误信息到队列
+        while not stop_event.is_set():
             try:
-                queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
-            except queue.Full:
-                pass
+                # 阻塞接收，超时 0.5 秒
+                msg = master.recv_match(type=TARGETS, blocking=True, timeout=0.5)
+                if msg is None:
+                    continue
+
+                msg_type = msg.get_type()
+                parsed = {'type': msg_type, 'timestamp': time.time()}
+
+                # ----- 解析 GLOBAL_POSITION_INT（位置信息） -----
+                if msg_type == 'GLOBAL_POSITION_INT':
+                    # lat/lon: 1e-7 度 → 十进制度
+                    parsed['lat'] = msg.lat / 1e7
+                    parsed['lon'] = msg.lon / 1e7
+                    parsed['alt'] = msg.alt / 1000          # mm → m (MSL)
+                    parsed['rel_alt'] = msg.relative_alt / 1000  # mm → m (相对起飞点)
+                    parsed['hdg'] = msg.hdg / 100           # 0.01° → °
+
+                # ----- 解析 ATTITUDE（姿态信息） -----
+                elif msg_type == 'ATTITUDE':
+                    parsed['roll'] = math.degrees(msg.roll)   # 弧度 → 度
+                    parsed['pitch'] = math.degrees(msg.pitch)
+                    parsed['yaw'] = math.degrees(msg.yaw)
+
+                # ----- 解析 SYS_STATUS（电池/系统状态） -----
+                elif msg_type == 'SYS_STATUS':
+                    parsed['voltage'] = msg.voltage_battery / 1000   # mV → V
+                    parsed['current'] = msg.current_battery / 100    # cA → A
+                    parsed['battery'] = msg.battery_remaining        # % (-1 表示未知)
+
+                # 放入队列（非阻塞，队列满则丢弃旧数据）
+                try:
+                    queue_obj.put_nowait(parsed)
+                except queue.Full:
+                    try:
+                        queue_obj.get_nowait()
+                    except queue.Empty:
+                        pass
+                    queue_obj.put_nowait(parsed)
+
+            except Exception as e:
+                print(f"⚠️ 接收消息异常: {e}")
+                time.sleep(0.1)
+
+    except Exception as e:
+        print(f"❌ MAVLink 连接失败: {e}")
+        try:
+            queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
+        except queue.Full:
+            pass
 
     def data_parse(raw_msg):
         """
