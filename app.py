@@ -371,13 +371,14 @@ def data_parse(raw_msg):
     return raw_msg
 
 def ui_refresh(parsed_data):
+    """将解析出的数据推送到前端文本控件动态更新"""
     if not parsed_data:
         return
     msg_type = parsed_data.get('type')
     if msg_type == 'GLOBAL_POSITION_INT':
+        # 从 WGS-84 转换为 GCJ-02（用于显示）
         lat_wgs84 = parsed_data.get('lat')
         lon_wgs84 = parsed_data.get('lon')
-        # 转为 GCJ-02（用于地图显示）
         lat_gcj02, lon_gcj02 = wgs84_to_gcj02(lat_wgs84, lon_wgs84)
         st.session_state.real_time_data['lat'] = lat_gcj02
         st.session_state.real_time_data['lon'] = lon_gcj02
@@ -385,7 +386,6 @@ def ui_refresh(parsed_data):
         st.session_state.real_time_data['rel_alt'] = parsed_data.get('rel_alt')
         st.session_state.real_time_data['last_update'] = parsed_data.get('timestamp')
     elif msg_type == 'ATTITUDE':
-        # 姿态不需要转换，直接用
         st.session_state.real_time_data['roll'] = parsed_data.get('roll')
         st.session_state.real_time_data['pitch'] = parsed_data.get('pitch')
         st.session_state.real_time_data['yaw'] = parsed_data.get('yaw')
@@ -398,10 +398,15 @@ def ui_refresh(parsed_data):
 # ========================== 左侧导航栏 ==========================
 with st.sidebar:
     st.subheader("🧭 导航")
-    st.session_state.current_page = st.radio("导航", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
+    st.session_state.current_page = st.radio(
+        "导航",
+        ["航线规划", "飞行监控", "坐标转换"],
+        index=0,
+        label_visibility="collapsed"
+    )
     st.divider()
     st.subheader("⚙️ 坐标系设置")
-    st.session_state.input_coord_system = st.radio("坐标系", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
+    st.session_state.input_coord_system = st.radio("", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
     st.divider()
     st.subheader("📊 系统状态")
     st.success("✅ 起点A已设置")
@@ -761,7 +766,6 @@ elif st.session_state.current_page == "飞行监控":
         list_area = st.empty()
         chart_area.line_chart(
             st.session_state.df_history[["序号"]],
-            # 删除 x 参数
             y="序号",
             color="#39ff14",
             height=200
@@ -780,3 +784,45 @@ elif st.session_state.current_page == "飞行监控":
         elapsed = time.time() - rd['last_update']
         if elapsed > 3 and rd['heartbeat_seq'] > 0:
             st.error(f"🚨 连接异常！已 {elapsed:.1f} 秒未收到 MAVLink 消息！")
+
+    # ---------- 自动刷新 ----------
+    if st.session_state.is_running:
+        st.rerun()
+
+# ========================== 坐标转换页面 ==========================
+elif st.session_state.current_page == "坐标转换":
+    st.header("🗺️ 坐标转换工具")
+    st.markdown("在 **WGS-84**（GPS原始坐标）和 **GCJ-02**（高德/百度地图坐标）之间相互转换。")
+
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        lat = st.number_input("纬度", value=32.234097, format="%.6f", key="convert_lat")
+        lon = st.number_input("经度", value=118.749413, format="%.6f", key="convert_lon")
+    
+    direction = st.radio(
+        "转换方向",
+        ["WGS-84 → GCJ-02", "GCJ-02 → WGS-84"],
+        index=0,
+        horizontal=True
+    )
+    
+    if st.button("🔄 转换", type="primary", use_container_width=True):
+        if direction == "WGS-84 → GCJ-02":
+            result_lat, result_lon = wgs84_to_gcj02(lat, lon)
+            label_from, label_to = "WGS-84", "GCJ-02"
+        else:
+            result_lat, result_lon = gcj02_to_wgs84(lat, lon)
+            label_from, label_to = "GCJ-02", "WGS-84"
+        
+        st.success("✅ 转换成功")
+        col_res1, col_res2 = st.columns(2)
+        with col_res1:
+            st.metric(f"{label_from} (输入)", f"{lat:.6f}, {lon:.6f}")
+        with col_res2:
+            st.metric(f"{label_to} (结果)", f"{result_lat:.6f}, {result_lon:.6f}")
+        
+        # 在地图上显示结果
+        if -90 < result_lat < 90 and -180 < result_lon < 180:
+            st.map(pd.DataFrame({"lat": [result_lat], "lon": [result_lon]}), zoom=15)
+    
+    st.caption("💡 提示：WGS-84 为 GPS 原始坐标，GCJ-02 为中国大陆使用的火星坐标系（高德/百度地图）。")
