@@ -394,10 +394,10 @@ def ui_refresh(parsed_data):
 # ========================== 左侧导航栏 ==========================
 with st.sidebar:
     st.subheader("🧭 导航")
-    st.session_state.current_page = st.radio("", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
+    st.session_state.current_page = st.radio("导航", ["航线规划", "飞行监控"], index=0, label_visibility="collapsed")
     st.divider()
     st.subheader("⚙️ 坐标系设置")
-    st.session_state.input_coord_system = st.radio("", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
+    st.session_state.input_coord_system = st.radio("坐标系", ["WGS-84", "GCJ-02(高德/百度)"], index=1, label_visibility="collapsed")
     st.divider()
     st.subheader("📊 系统状态")
     st.success("✅ 起点A已设置")
