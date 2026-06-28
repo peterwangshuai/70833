@@ -371,17 +371,21 @@ def data_parse(raw_msg):
     return raw_msg
 
 def ui_refresh(parsed_data):
-    """将解析出的数据推送到前端文本控件动态更新"""
     if not parsed_data:
         return
     msg_type = parsed_data.get('type')
     if msg_type == 'GLOBAL_POSITION_INT':
-        st.session_state.real_time_data['lat'] = parsed_data.get('lat')
-        st.session_state.real_time_data['lon'] = parsed_data.get('lon')
+        lat_wgs84 = parsed_data.get('lat')
+        lon_wgs84 = parsed_data.get('lon')
+        # 转为 GCJ-02（用于地图显示）
+        lat_gcj02, lon_gcj02 = wgs84_to_gcj02(lat_wgs84, lon_wgs84)
+        st.session_state.real_time_data['lat'] = lat_gcj02
+        st.session_state.real_time_data['lon'] = lon_gcj02
         st.session_state.real_time_data['alt'] = parsed_data.get('alt')
         st.session_state.real_time_data['rel_alt'] = parsed_data.get('rel_alt')
         st.session_state.real_time_data['last_update'] = parsed_data.get('timestamp')
     elif msg_type == 'ATTITUDE':
+        # 姿态不需要转换，直接用
         st.session_state.real_time_data['roll'] = parsed_data.get('roll')
         st.session_state.real_time_data['pitch'] = parsed_data.get('pitch')
         st.session_state.real_time_data['yaw'] = parsed_data.get('yaw')
