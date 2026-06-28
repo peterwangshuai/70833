@@ -549,7 +549,7 @@ elif st.session_state.current_page == "飞行监控":
         try:
             # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）[reference:0][reference:1]
             master = mavutil.mavlink_connection(
-                'udpin:0.0.0.0:14550',
+                'udpin:0.0.0.0:14550',   
                 dialect='ardupilotmega'  # ArduPilot 用 ardupilotmega，PX4 用 'common'
             )
 
