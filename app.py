@@ -757,7 +757,7 @@ elif st.session_state.current_page == "飞行监控":
         list_area = st.empty()
         chart_area.line_chart(
             st.session_state.df_history[["序号"]],
-            x="时间" if "时间" in st.session_state.df_history.columns else None,
+            # 删除 x 参数
             y="序号",
             color="#39ff14",
             height=200
