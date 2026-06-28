@@ -11,6 +11,17 @@ import json
 from shapely.geometry import LineString, Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
 from shapely import buffer
+import math
+import threading
+import queue
+
+# 尝试导入 pymavlink（如果不存在则提示）
+try:
+    from pymavlink import mavutil
+    MAVLINK_AVAILABLE = True
+except ImportError:
+    MAVLINK_AVAILABLE = False
+    st.warning("⚠️ pymavlink 未安装，将无法接收 MAVLink 数据。请运行 pip install pymavlink")
 
 # ========================== 全局配置：汉化CSS ==========================
 st.set_page_config(page_title="无人机航线规划系统", layout="wide")
@@ -32,7 +43,7 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # ========================== 基础全局参数 ==========================
-CONFIG_DIR = r"D:\17166\Documents\作业"          # 修改为您的目录
+CONFIG_DIR = r"D:\17166\Documents\作业"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "障碍物配置.json")
 VERSION = "v18.0 可视图Dijkstra全局最优避障版"
 DEFAULT_SAFE_RADIUS = 5
@@ -114,7 +125,6 @@ def ensure_config_dir():
         os.makedirs(CONFIG_DIR, exist_ok=True)
 
 def save_obstacles_to_file():
-    """保存到固定文件（障碍物配置.json）"""
     ensure_config_dir()
     save_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_data = {
@@ -136,7 +146,6 @@ def save_obstacles_to_file():
     return save_data
 
 def load_obstacles_from_file(file_path=None):
-    """从指定文件加载，默认为固定文件"""
     if file_path is None:
         file_path = CONFIG_FILE
     ensure_config_dir()
@@ -244,7 +253,7 @@ if 'current_page' not in st.session_state:
 if 'input_coord_system' not in st.session_state:
     st.session_state.input_coord_system = "GCJ-02(高德/百度)"
 if 'df_history' not in st.session_state:
-    st.session_state.df_history = pd.DataFrame(columns=["时间", "序号"])
+    st.session_state.df_history = pd.DataFrame(columns=["时间", "序号", "纬度", "经度", "高度(m)"])
 if 'last_received' not in st.session_state:
     st.session_state.last_received = None
 if 'is_running' not in st.session_state:
@@ -262,11 +271,125 @@ if 'flight_height' not in st.session_state:
 if 'safe_radius' not in st.session_state:
     st.session_state.safe_radius = DEFAULT_SAFE_RADIUS
 if 'current_route_points' not in st.session_state:
-    st.session_state.current_route_points = [(32.234097, 118.749413), (32.235200, 118.749800)]  # 南京科技职业学院内
+    st.session_state.current_route_points = [(32.234097, 118.749413), (32.235200, 118.749800)]
 if 'map_rerun_key' not in st.session_state:
     st.session_state.map_rerun_key = 0
 if 'all_routes' not in st.session_state:
     st.session_state.all_routes = {}
+if 'mavlink_queue' not in st.session_state:
+    st.session_state.mavlink_queue = queue.Queue(maxsize=100)
+if 'mavlink_thread' not in st.session_state:
+    st.session_state.mavlink_thread = None
+if 'mavlink_running' not in st.session_state:
+    st.session_state.mavlink_running = False
+if 'real_time_data' not in st.session_state:
+    st.session_state.real_time_data = {
+        'lat': None, 'lon': None, 'alt': None, 'rel_alt': None,
+        'roll': None, 'pitch': None, 'yaw': None,
+        'voltage': None, 'current': None, 'battery': None,
+        'heartbeat_seq': 0, 'last_update': None
+    }
+
+# ========================== MAVLink 数据接收函数（修正版） ==========================
+def mavlink_data_receive(queue_obj, stop_event):
+    """
+    持续监听 UDP 端口 14550，接收 MAVLink 数据包。
+    使用 pymavlink 库连接 SITL。
+    """
+    if not MAVLINK_AVAILABLE:
+        print("⚠️ pymavlink 未安装，无法接收 MAVLink 数据。")
+        return
+
+    try:
+        # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）
+        master = mavutil.mavlink_connection(
+            'udpin:0.0.0.0:14550',      # 正确格式
+            dialect='ardupilotmega'      # 正确拼写
+        )
+
+        # 等待心跳包，确认飞控已连接
+        print("⏳ 等待 SITL 心跳包...")
+        master.wait_heartbeat(timeout=10)
+        print(f"✅ 已连接 — system {master.target_system}, component {master.target_component}")
+
+        # 要接收的消息类型
+        TARGETS = ['GLOBAL_POSITION_INT', 'ATTITUDE', 'SYS_STATUS']
+
+        while not stop_event.is_set():
+            try:
+                # 阻塞接收，超时 0.5 秒
+                msg = master.recv_match(type=TARGETS, blocking=True, timeout=0.5)
+                if msg is None:
+                    continue
+
+                msg_type = msg.get_type()
+                parsed = {'type': msg_type, 'timestamp': time.time()}
+
+                # ----- 解析 GLOBAL_POSITION_INT（位置信息） -----
+                if msg_type == 'GLOBAL_POSITION_INT':
+                    parsed['lat'] = msg.lat / 1e7
+                    parsed['lon'] = msg.lon / 1e7
+                    parsed['alt'] = msg.alt / 1000          # mm → m (MSL)
+                    parsed['rel_alt'] = msg.relative_alt / 1000  # mm → m (相对起飞点)
+                    parsed['hdg'] = msg.hdg / 100           # 0.01° → °
+
+                # ----- 解析 ATTITUDE（姿态信息） -----
+                elif msg_type == 'ATTITUDE':
+                    parsed['roll'] = math.degrees(msg.roll)   # 弧度 → 度
+                    parsed['pitch'] = math.degrees(msg.pitch)
+                    parsed['yaw'] = math.degrees(msg.yaw)
+
+                # ----- 解析 SYS_STATUS（电池/系统状态） -----
+                elif msg_type == 'SYS_STATUS':
+                    parsed['voltage'] = msg.voltage_battery / 1000   # mV → V
+                    parsed['current'] = msg.current_battery / 100    # cA → A
+                    parsed['battery'] = msg.battery_remaining        # % (-1 表示未知)
+
+                # 放入队列（非阻塞，队列满则丢弃旧数据）
+                try:
+                    queue_obj.put_nowait(parsed)
+                except queue.Full:
+                    try:
+                        queue_obj.get_nowait()
+                    except queue.Empty:
+                        pass
+                    queue_obj.put_nowait(parsed)
+
+            except Exception as e:
+                print(f"⚠️ 接收消息异常: {e}")
+                time.sleep(0.1)
+
+    except Exception as e:
+        print(f"❌ MAVLink 连接失败: {e}")
+        try:
+            queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
+        except queue.Full:
+            pass
+
+def data_parse(raw_msg):
+    """解析 MAVLink 消息（实际已由 mavlink_data_receive 完成）"""
+    return raw_msg
+
+def ui_refresh(parsed_data):
+    """将解析出的数据推送到前端文本控件动态更新"""
+    if not parsed_data:
+        return
+    msg_type = parsed_data.get('type')
+    if msg_type == 'GLOBAL_POSITION_INT':
+        st.session_state.real_time_data['lat'] = parsed_data.get('lat')
+        st.session_state.real_time_data['lon'] = parsed_data.get('lon')
+        st.session_state.real_time_data['alt'] = parsed_data.get('alt')
+        st.session_state.real_time_data['rel_alt'] = parsed_data.get('rel_alt')
+        st.session_state.real_time_data['last_update'] = parsed_data.get('timestamp')
+    elif msg_type == 'ATTITUDE':
+        st.session_state.real_time_data['roll'] = parsed_data.get('roll')
+        st.session_state.real_time_data['pitch'] = parsed_data.get('pitch')
+        st.session_state.real_time_data['yaw'] = parsed_data.get('yaw')
+    elif msg_type == 'SYS_STATUS':
+        st.session_state.real_time_data['voltage'] = parsed_data.get('voltage')
+        st.session_state.real_time_data['current'] = parsed_data.get('current')
+        st.session_state.real_time_data['battery'] = parsed_data.get('battery')
+    st.session_state.real_time_data['heartbeat_seq'] += 1
 
 # ========================== 左侧导航栏 ==========================
 with st.sidebar:
@@ -339,16 +462,13 @@ if st.session_state.current_page == "航线规划":
         else:
             st.info("🖌️ 请在地图上圈选障碍物区域（画完自动刷新）")
 
-        # ====== 修改后的保存/下载/加载区域 ======
-        st.markdown("---")
-        # 第一行：保存到目录 + 下载JSON
+        # 保存/加载/下载/清空/部署
         col1, col2 = st.columns(2)
         with col1:
             if st.button("💾 保存到目录", type="primary", use_container_width=True):
                 save_obstacles_to_file()
                 st.success(f"已保存到 {CONFIG_FILE}")
         with col2:
-            # 下载按钮
             if st.session_state.obstacle_polygons:
                 data = {
                     "版本": VERSION,
@@ -382,7 +502,6 @@ if st.session_state.current_page == "航线规划":
                     disabled=True
                 )
 
-        # 第二行：加载区域（显示文件列表 + 加载按钮）
         ensure_config_dir()
         json_files = [f for f in os.listdir(CONFIG_DIR) if f.endswith('.json')]
         if json_files:
@@ -393,7 +512,6 @@ if st.session_state.current_page == "航线规划":
         else:
             st.info("目录下暂无障碍物JSON文件，请先保存或下载")
 
-        # 清空和部署按钮（放在同一行）
         col3, col4 = st.columns(2)
         with col3:
             if st.button("🗑️ 清空所有", use_container_width=True):
@@ -411,14 +529,14 @@ if st.session_state.current_page == "航线规划":
 
         # 坐标转换及路径规划
         if st.session_state.input_coord_system == "WGS-84":
-            a_lat,a_lon = wgs84_to_gcj02(input_a_lat,input_a_lon)
-            b_lat,b_lon = wgs84_to_gcj02(input_b_lat,input_b_lon)
+            a_lat, a_lon = wgs84_to_gcj02(input_a_lat, input_a_lon)
+            b_lat, b_lon = wgs84_to_gcj02(input_b_lat, input_b_lon)
         else:
-            a_lat,a_lon = input_a_lat,input_a_lon
-            b_lat,b_lon = input_b_lat,input_b_lon
+            a_lat, a_lon = input_a_lat, input_a_lon
+            b_lat, b_lon = input_b_lat, input_b_lon
 
-        start_pt = (a_lat,a_lon)
-        end_pt = (b_lat,b_lon)
+        start_pt = (a_lat, a_lon)
+        end_pt = (b_lat, b_lon)
 
         st.session_state.all_routes = generate_routes(
             start_pt, end_pt,
@@ -516,150 +634,9 @@ if st.session_state.current_page == "航线规划":
 
         render_map()
 
-# ========================== 飞行监控页面（完整 pymavlink 实现） ==========================
+# ========================== 飞行监控页面（带MAVLink） ==========================
 elif st.session_state.current_page == "飞行监控":
-    import threading
-    import queue
-    import math
-    from pymavlink import mavutil
-
     st.header("📡 飞行监控（SITL 实时数据）")
-
-    # ---------- 全局数据队列（线程间通信） ----------
-    if 'mavlink_queue' not in st.session_state:
-        st.session_state.mavlink_queue = queue.Queue(maxsize=100)
-    if 'mavlink_thread' not in st.session_state:
-        st.session_state.mavlink_thread = None
-    if 'mavlink_running' not in st.session_state:
-        st.session_state.mavlink_running = False
-    if 'real_time_data' not in st.session_state:
-        st.session_state.real_time_data = {
-            'lat': None, 'lon': None, 'alt': None, 'rel_alt': None,
-            'roll': None, 'pitch': None, 'yaw': None,
-            'voltage': None, 'current': None, 'battery': None,
-            'heartbeat_seq': 0, 'last_update': None
-        }
-
-def mavlink_data_receive(queue_obj, stop_event):
-    """
-    持续监听 UDP 端口 14550，接收 MAVLink 数据包。
-    使用 pymavlink 库连接 SITL。
-    """
-    try:
-        # 监听 UDP 14550 端口（SITL 默认往外吐数据的端口）
-        master = mavutil.mavlink_connection(
-            'udpin:0.0.0.0:14550',      # ✅ 正确格式
-            dialect='ardupilotmega'      # ✅ 正确拼写
-        )
-
-        # 等待心跳包，确认飞控已连接
-        print("⏳ 等待 SITL 心跳包...")
-        master.wait_heartbeat(timeout=10)
-        print(f"✅ 已连接 — system {master.target_system}, component {master.target_component}")
-
-        # 要接收的消息类型
-        TARGETS = ['GLOBAL_POSITION_INT', 'ATTITUDE', 'SYS_STATUS']
-
-        while not stop_event.is_set():
-            try:
-                # 阻塞接收，超时 0.5 秒
-                msg = master.recv_match(type=TARGETS, blocking=True, timeout=0.5)
-                if msg is None:
-                    continue
-
-                msg_type = msg.get_type()
-                parsed = {'type': msg_type, 'timestamp': time.time()}
-
-                # ----- 解析 GLOBAL_POSITION_INT（位置信息） -----
-                if msg_type == 'GLOBAL_POSITION_INT':
-                    parsed['lat'] = msg.lat / 1e7
-                    parsed['lon'] = msg.lon / 1e7
-                    parsed['alt'] = msg.alt / 1000
-                    parsed['rel_alt'] = msg.relative_alt / 1000
-                    parsed['hdg'] = msg.hdg / 100
-
-                # ----- 解析 ATTITUDE（姿态信息） -----
-                elif msg_type == 'ATTITUDE':
-                    parsed['roll'] = math.degrees(msg.roll)
-                    parsed['pitch'] = math.degrees(msg.pitch)
-                    parsed['yaw'] = math.degrees(msg.yaw)
-
-                # ----- 解析 SYS_STATUS（电池/系统状态） -----
-                elif msg_type == 'SYS_STATUS':
-                    parsed['voltage'] = msg.voltage_battery / 1000
-                    parsed['current'] = msg.current_battery / 100
-                    parsed['battery'] = msg.battery_remaining
-
-                # 放入队列
-                try:
-                    queue_obj.put_nowait(parsed)
-                except queue.Full:
-                    try:
-                        queue_obj.get_nowait()
-                    except queue.Empty:
-                        pass
-                    queue_obj.put_nowait(parsed)
-
-            except Exception as e:
-                print(f"⚠️ 接收消息异常: {e}")
-                time.sleep(0.1)
-
-    except Exception as e:
-        print(f"❌ MAVLink 连接失败: {e}")
-        try:
-            queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
-        except queue.Full:
-            pass
-                    queue_obj.put_nowait(parsed)
-
-            except Exception as e:
-                print(f"⚠️ 接收消息异常: {e}")
-                time.sleep(0.1)
-
-    except Exception as e:
-        print(f"❌ MAVLink 连接失败: {e}")
-        try:
-            queue_obj.put_nowait({'type': 'ERROR', 'msg': str(e)})
-        except queue.Full:
-            pass
-
-    def data_parse(raw_msg):
-        """
-        解析 MAVLink 消息，提取位置、高度、姿态。
-        返回 dict 包含 lat, lon, alt, roll, pitch, yaw 等。
-        """
-        # 直接从队列来的消息已经是解析好的 dict，直接返回
-        # 但如果需要额外处理可以在这里扩展
-        return raw_msg
-
-    def ui_refresh(parsed_data):
-        """
-        将解析出的数据推送到前端文本控件动态更新。
-        """
-        if not parsed_data:
-            return
-
-        msg_type = parsed_data.get('type')
-
-        if msg_type == 'GLOBAL_POSITION_INT':
-            st.session_state.real_time_data['lat'] = parsed_data.get('lat')
-            st.session_state.real_time_data['lon'] = parsed_data.get('lon')
-            st.session_state.real_time_data['alt'] = parsed_data.get('alt')
-            st.session_state.real_time_data['rel_alt'] = parsed_data.get('rel_alt')
-            st.session_state.real_time_data['last_update'] = parsed_data.get('timestamp')
-
-        elif msg_type == 'ATTITUDE':
-            st.session_state.real_time_data['roll'] = parsed_data.get('roll')
-            st.session_state.real_time_data['pitch'] = parsed_data.get('pitch')
-            st.session_state.real_time_data['yaw'] = parsed_data.get('yaw')
-
-        elif msg_type == 'SYS_STATUS':
-            st.session_state.real_time_data['voltage'] = parsed_data.get('voltage')
-            st.session_state.real_time_data['current'] = parsed_data.get('current')
-            st.session_state.real_time_data['battery'] = parsed_data.get('battery')
-
-        # 更新心跳序号（每收到一条消息加 1）
-        st.session_state.real_time_data['heartbeat_seq'] += 1
 
     # ---------- UI 控件 ----------
     c1, c2, c3 = st.columns(3)
@@ -675,7 +652,6 @@ def mavlink_data_receive(queue_obj, stop_event):
         if not st.session_state.mavlink_running:
             st.session_state.mavlink_running = True
             st.session_state.mavlink_stop_event = threading.Event()
-            # 启动后台线程接收 MAVLink 数据
             st.session_state.mavlink_thread = threading.Thread(
                 target=mavlink_data_receive,
                 args=(st.session_state.mavlink_queue, st.session_state.mavlink_stop_event),
@@ -706,7 +682,7 @@ def mavlink_data_receive(queue_obj, stop_event):
             'voltage': None, 'current': None, 'battery': None,
             'heartbeat_seq': 0, 'last_update': None
         }
-        st.session_state.df_history = pd.DataFrame(columns=["时间", "序号"])
+        st.session_state.df_history = pd.DataFrame(columns=["时间", "序号", "纬度", "经度", "高度(m)"])
         st.rerun()
 
     # ---------- 实时数据显示 ----------
@@ -714,17 +690,14 @@ def mavlink_data_receive(queue_obj, stop_event):
     while not st.session_state.mavlink_queue.empty():
         try:
             msg = st.session_state.mavlink_queue.get_nowait()
-            # 如果是错误消息，显示错误
             if msg.get('type') == 'ERROR':
                 st.error(f"🚨 {msg.get('msg')}")
                 continue
-            # 解析并刷新 UI
             parsed = data_parse(msg)
             ui_refresh(parsed)
         except queue.Empty:
             break
 
-    # ---------- 显示实时数据卡片 ----------
     rd = st.session_state.real_time_data
 
     col_status, col_gps, col_att, col_bat = st.columns(4)
@@ -779,12 +752,9 @@ def mavlink_data_receive(queue_obj, stop_event):
             ignore_index=True
         )
 
-    # 显示图表和表格
     if len(st.session_state.df_history) > 0:
         chart_area = st.empty()
         list_area = st.empty()
-
-        # 显示心跳序号趋势图
         chart_area.line_chart(
             st.session_state.df_history[["序号"]],
             x="时间" if "时间" in st.session_state.df_history.columns else None,
@@ -792,8 +762,6 @@ def mavlink_data_receive(queue_obj, stop_event):
             color="#39ff14",
             height=200
         )
-
-        # 显示最近 10 条记录
         list_area.dataframe(
             st.session_state.df_history.tail(10),
             hide_index=True,
